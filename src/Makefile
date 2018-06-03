@@ -1,11 +1,18 @@
-default:../bin/rw_test
+default:../bin/rw_test ../bin/oss-cli
 
-CC = gcc
+GCC = gcc
+GXX = g++
 CFLAGS = 
 LFLAGS = -llightnvm
 
 ../bin/rw_test:rw_test.c
-	$(CC) $(CFLAGS) $< -o $@ $(LFLAGS) 
+	$(GCC) $(CFLAGS) $< -o $@ $(LFLAGS) 
+oss.o:oss.cpp
+	$(GXX) $(CPPFLAGS) -c $< -o $@
+
+../bin/oss-cli:cli.cpp oss.h oss.o
+	$(GXX) $(CPPFLAGS) $< -o $@ oss.o $(LFLAGS) 
+
 clean:
-	$(RM) ../bin/rw_test
+	$(RM) ../bin/* *.o
 	
