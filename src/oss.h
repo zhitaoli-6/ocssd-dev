@@ -13,8 +13,8 @@ using namespace std;
 
 #define MAX_DEV 1
 
-typedef long long oid_t;
-typedef long long seq_t;
+typedef uint64_t oid_t;
+typedef uint64_t seq_t;
 
 /*
 typedef int (*oss_get_t)(oid_t oid, char* buf, int len);
@@ -120,13 +120,15 @@ block_meta_t* oss_t::_alloc_block(){
             blk->blk_addr.g.lun = (i / geo->nblocks) % geo->nluns;
             blk->blk_addr.g.blk = i % geo->nblocks;
             blk->next = NULL;
+            //printf("alloc block:");
+            //nvm_addr_pr(blk->blk_addr);
             return blk;
         }
     }
     return blk;
 }
 
-inline int oss_t::_get_free_space(struct nvm_addr blk_addr){
+int oss_t::_get_free_space(struct nvm_addr blk_addr){
     return (geo->npages - blk_addr.g.pg - 1) * geo->page_nbytes;
 }
 
@@ -134,7 +136,7 @@ index_t* oss_t::_create_object(int len){
     block_meta_t* blk = work_list;
     block_meta_t* pre = NULL;
     while(blk){
-        if(_get_free_space(blk->blk_addr) * geo->nplanes <= len){
+        if(_get_free_space(blk->blk_addr) * geo->nplanes >= len){
             break;
         }
         pre = blk;
@@ -160,14 +162,22 @@ index_t* oss_t::_create_object(int len){
     index->deleted = false;
 
     int alloc_page = (len + geo->nplanes * geo->page_nbytes - 1) / (geo->nplanes * geo->page_nbytes);
-    blk->blk_addr.g.pg += alloc_page;
+    //printf("object len %d alloc_pages %d\n", len, alloc_page);
+    int pg = blk->blk_addr.g.pg;
     // delete from work_list, insert into full_list;
-    if(blk->blk_addr.g.pg == geo->npages){
+    if(pg + alloc_page == geo->npages){
         if(pre) pre->next = blk->next;
-
+        else work_list = blk->next;
         blk->next = full_list;
-        full_list->next = blk;
+        full_list = blk;
     }
+    else{
+        blk->blk_addr.g.pg += alloc_page;
+        //nvm_addr_pr(blk->blk_addr);
+    }
+
+    printf("create object %d: use %d plane-pages. ",index->len, alloc_page);
+    nvm_addr_pr(index->obj_addr);
     return index;
 } 
 
@@ -180,44 +190,53 @@ int oss_t::oss_get(oid_t oid, char* buf_r, int len){
 
         int size = min(index->len, len);
         char* buf = NULL;
-        if((uint64_t)buf_r % geo->sector_nbytes) {
-            buf = (char*)nvm_buf_alloc(geo, size);
+        if((uint64_t)buf_r % geo->sector_nbytes || len % (geo->nplanes * geo->page_nbytes)) {
+            int pad_size = size;
+            if(size % (geo->nplanes * geo->page_nbytes)) pad_size = (size / (geo->nplanes * geo->page_nbytes) + 1) * (geo->nplanes * geo->page_nbytes);
+            buf = (char*)nvm_buf_alloc(geo, pad_size);
             if(!buf) return ENOMEMORY;
         }else buf = buf_r;
 
         struct nvm_addr addrs[NVM_NADDR_MAX];
         struct nvm_ret ret;
-        int xfer = geo->page_nbytes * NVM_NADDR_MAX;
+        int naddr = NVM_NADDR_MAX;
+        int xfer = geo->sector_nbytes * NVM_NADDR_MAX;
+        //printf("xfer size %d\n", xfer);
         int xpg = NVM_NADDR_MAX / (geo->nplanes*geo->nsectors);
         int curoff = xfer, pgoff = 0;
         int pg = index->obj_addr.g.pg;
         for(; curoff <= len; curoff += xfer){
-            for(int i = 0; i < NVM_NADDR_MAX; i++){
+            for(int i = 0; i < naddr; i++){
                 addrs[i].ppa = index->obj_addr.ppa;
                 addrs[i].g.pl = (i / geo->nsectors) % geo->nplanes;
                 addrs[i].g.pg = pg + i / (geo->nsectors * geo->nplanes) + pgoff;
                 addrs[i].g.sec = i % geo->nsectors;
             }
             pgoff += xpg;
-            int res = nvm_addr_read(dev[0], addrs, NVM_NADDR_MAX, buf+curoff-xfer, NULL, pmode, &ret);
+            /*
+               for(int i = 0; i < NVM_NADDR_MAX; i++){
+               nvm_addr_pr(addrs[i]);
+               }
+               */
+            int res = nvm_addr_read(dev[0], addrs, naddr, buf+curoff-xfer, NULL, pmode, &ret);
             if(res < 0) {
                 return EGETFAIL;
             }
         }
         if(curoff > len && curoff-xfer < len){
             int npage = (len + xfer - curoff + (geo->nplanes * geo->page_nbytes) - 1) / (geo->nplanes * geo->page_nbytes);
-            for(int i = 0; i < npage * geo->nplanes; i++){
+            naddr = npage * geo->nplanes * geo->nsectors;
+            for(int i = 0; i < naddr; i++){
                 addrs[i].ppa = index->obj_addr.ppa;
                 addrs[i].g.pl = (i / geo->nsectors) % geo->nplanes;
                 addrs[i].g.pg = pg + i / (geo->nsectors * geo->nplanes) + pgoff;
                 addrs[i].g.sec = i % geo->nsectors;
             }
-            int res = nvm_addr_read(dev[0], addrs, NVM_NADDR_MAX, buf+curoff-xfer, NULL, pmode, &ret);
+            int res = nvm_addr_read(dev[0], addrs, naddr, buf+curoff-xfer, NULL, pmode, &ret);
             if(res < 0) {
                 return EGETFAIL;
             }
         }
-
 
         if(buf != buf_r)
             memcpy(buf_r, buf, size);
@@ -234,6 +253,7 @@ int oss_t::oss_put(oid_t oid, char* buf_w, int len){
     }
     index_t* index = _create_object(len);
     if(index == NULL){
+        printf("create object fails\n");
         return EPUTFAIL;
     }
     index_map[oid] = index;
@@ -250,32 +270,48 @@ int oss_t::oss_put(oid_t oid, char* buf_w, int len){
 
     struct nvm_addr addrs[NVM_NADDR_MAX];
     struct nvm_ret ret;
-    int xfer = geo->page_nbytes * NVM_NADDR_MAX;
+    int naddr = NVM_NADDR_MAX;
+    int xfer = geo->sector_nbytes * NVM_NADDR_MAX;
+    //printf("xfer size %d\n", xfer);
     int xpg = NVM_NADDR_MAX / (geo->nplanes*geo->nsectors);
     int curoff = xfer, pgoff = 0;
     int pg = index->obj_addr.g.pg;
     for(; curoff <= len; curoff += xfer){
-        for(int i = 0; i < NVM_NADDR_MAX; i++){
+        for(int i = 0; i < naddr; i++){
             addrs[i].ppa = index->obj_addr.ppa;
             addrs[i].g.pl = (i / geo->nsectors) % geo->nplanes;
             addrs[i].g.pg = pg + i / (geo->nsectors * geo->nplanes) + pgoff;
             addrs[i].g.sec = i % geo->nsectors;
         }
         pgoff += xpg;
-        int res = nvm_addr_write(dev[0], addrs, NVM_NADDR_MAX, buf+curoff-xfer, NULL, pmode, &ret);
+        /*
+           for(int i = 0; i < NVM_NADDR_MAX; i++){
+           nvm_addr_pr(addrs[i]);
+           }
+           */
+        int res = nvm_addr_write(dev[0], addrs, naddr, buf+curoff-xfer, NULL, pmode, &ret);
+        //printf("put %lu, len %d, res %d\n", oid, len, res);
         if(res < 0) {
             return EPUTFAIL;
         }
     }
     if(curoff > len && curoff-xfer < len){
         int npage = (len + xfer - curoff + (geo->nplanes * geo->page_nbytes) - 1) / (geo->nplanes * geo->page_nbytes);
-        for(int i = 0; i < npage * geo->nplanes; i++){
+        naddr = npage * geo->nplanes * geo->nsectors;
+        for(int i = 0; i < naddr; i++){
             addrs[i].ppa = index->obj_addr.ppa;
             addrs[i].g.pl = (i / geo->nsectors) % geo->nplanes;
             addrs[i].g.pg = pg + i / (geo->nsectors * geo->nplanes) + pgoff;
             addrs[i].g.sec = i % geo->nsectors;
         }
-        int res = nvm_addr_write(dev[0], addrs, NVM_NADDR_MAX, buf+curoff-xfer, NULL, pmode, &ret);
+        buf = buf + curoff - xfer;
+        if(naddr * geo->sector_nbytes != len+xfer-curoff){
+            char* buf_pad = (char*)nvm_buf_alloc(geo, naddr * geo->sector_nbytes);
+            memset(buf_pad, 0, naddr * geo->sector_nbytes);
+            memcpy(buf_pad, buf, len+xfer-curoff);
+            buf = buf_pad;
+        }
+        int res = nvm_addr_write(dev[0], addrs, naddr, buf, NULL, pmode, &ret);
         if(res < 0) {
             return EPUTFAIL;
         }
