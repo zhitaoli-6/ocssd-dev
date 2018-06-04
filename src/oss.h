@@ -1,23 +1,31 @@
 #include <liblightnvm.h>
+#include <iostream>
+#include <cstring>
 #include <map>
+#include <stdint.h>
 #include <assert.h>
 
 #include "engine.h"
 #include "error.h"
+#include "bitmap.h"
 
 using namespace std;
 
-#define MAX_DEV 3
+#define MAX_DEV 1
 
 typedef long long oid_t;
+typedef long long seq_t;
 
 /*
-typedef int (*oss_get_t)(oid_t oid, void* buf, int len);
-typedef int (*oss_put_t)(void* buf, int len, oid_t* oid);
+typedef int (*oss_get_t)(oid_t oid, char* buf, int len);
+typedef int (*oss_put_t)(char* buf, int len, oid_t* oid);
 typedef int (*oss_del_t)(oid_t oid);
 */
 
-
+struct block_meta_t{
+    struct nvm_addr blk_addr;
+    block_meta_t* next;
+};
 
 struct index_t{
     struct nvm_dev* dev;
@@ -34,18 +42,254 @@ typedef map<oid_t, index_t*>::iterator index_map_iter_t;
 
 class oss_t{
 private:
-    struct nvm_dev *dev[MAX_DEV];
-    int ndevs;
-    index_map_t index_map;
-    size_t block_nbytes;
-    //inter_map_iter_t index_map_iter;
+    index_t* _create_object(int len);
+    int _get_free_space(struct nvm_addr blk_addr);
+    block_meta_t* _alloc_block();
+
 public:
     void setup();
     oss_t(int ndev);
-    int oss_get(oid_t oid, void* buf, int len);
-    int oss_put(void* buf, int len, oid_t *oid);
+    ~oss_t();
+    int oss_get(oid_t oid, char* buf, int len);
+    int oss_put(oid_t oid, char* buf, int len);
     int oss_del(oid_t oid);
+private:
+    struct nvm_dev *dev[MAX_DEV];
+    int ndevs;
+
+    const struct nvm_geo* geo;
+    int pmode;
+    size_t block_nbytes;
+    
+    int nblocks;
+    bitmap_t* blk_map;
+
+    block_meta_t* work_list;
+    block_meta_t* full_list;
+
+
+    index_map_t index_map;
+    //inter_map_iter_t index_map_iter;
+    seq_t seq_no;
+
 };
 
 
+
+oss_t::oss_t(int ndev){
+    this->ndevs = ndev;
+    cout << "construct oss" << endl;
+}
+oss_t::~oss_t(){
+    cout << "deconstruct oss" << endl;
+}
+
+
+void oss_t::setup(){
+    assert(ndevs <= MAX_DEV);
+    char name[128];
+    for(int i = 0; i < ndevs; i++){
+        sprintf(name, "/dev/nvme%01dn1", i);
+        dev[i] = nvm_dev_open(name);
+        if(!dev[i]){
+            perror(name);
+            return;
+        }
+    }
+    geo = nvm_dev_get_geo(dev[0]);
+    pmode = nvm_dev_get_pmode(dev[0]);
+    assert(pmode*2 == geo->nplanes);
+    block_nbytes = geo->npages * geo->page_nbytes;
+
+    nblocks = geo->nchannels * geo->nluns * geo->nblocks;
+    blk_map = (bitmap_t *)calloc(nblocks/8 + 1, 1);
+    work_list = NULL;
+    full_list = NULL;
+
+    seq_no = 0;
+}
+
+block_meta_t* oss_t::_alloc_block(){
+    block_meta_t* blk = NULL;
+    for(int i=0; i < nblocks; i++){
+        if(get_bit(blk_map, i) == 0){
+            set_bit(blk_map, i);
+            blk = (block_meta_t*)malloc(sizeof(block_meta_t));
+            blk->blk_addr.ppa = 0;
+            blk->blk_addr.g.ch = i / (geo->nluns * geo->nblocks);
+            blk->blk_addr.g.lun = (i / geo->nblocks) % geo->nluns;
+            blk->blk_addr.g.blk = i % geo->nblocks;
+            blk->next = NULL;
+            return blk;
+        }
+    }
+    return blk;
+}
+
+inline int oss_t::_get_free_space(struct nvm_addr blk_addr){
+    return (geo->npages - blk_addr.g.pg - 1) * geo->page_nbytes;
+}
+
+index_t* oss_t::_create_object(int len){
+    block_meta_t* blk = work_list;
+    block_meta_t* pre = NULL;
+    while(blk){
+        if(_get_free_space(blk->blk_addr) * geo->nplanes <= len){
+            break;
+        }
+        pre = blk;
+        blk = blk->next;
+    }
+
+    if(!blk){
+        blk = _alloc_block();
+        if(!blk) {
+            return NULL;
+        }
+        // insert into work_list;
+        pre = NULL;
+        blk->next = work_list;
+        work_list = blk;
+    }
+
+
+    index_t* index = (index_t*)malloc(sizeof(index_t));
+    index->dev = dev[0];
+    index->obj_addr.ppa = blk->blk_addr.ppa;
+    index->len = len;
+    index->deleted = false;
+
+    int alloc_page = (len + geo->nplanes * geo->page_nbytes - 1) / (geo->nplanes * geo->page_nbytes);
+    blk->blk_addr.g.pg += alloc_page;
+    // delete from work_list, insert into full_list;
+    if(blk->blk_addr.g.pg == geo->npages){
+        if(pre) pre->next = blk->next;
+
+        blk->next = full_list;
+        full_list->next = blk;
+    }
+    return index;
+} 
+
+int oss_t::oss_get(oid_t oid, char* buf_r, int len){
+    index_map_iter_t iter =  index_map.find(oid);
+    if(iter != index_map.end()){
+        index_t* index = iter->second;
+        if(index->deleted) return ENOEXIST;
+        // read from SSD
+
+        int size = min(index->len, len);
+        char* buf = NULL;
+        if((uint64_t)buf_r % geo->sector_nbytes) {
+            buf = (char*)nvm_buf_alloc(geo, size);
+            if(!buf) return ENOMEMORY;
+        }else buf = buf_r;
+
+        struct nvm_addr addrs[NVM_NADDR_MAX];
+        struct nvm_ret ret;
+        int xfer = geo->page_nbytes * NVM_NADDR_MAX;
+        int xpg = NVM_NADDR_MAX / (geo->nplanes*geo->nsectors);
+        int curoff = xfer, pgoff = 0;
+        int pg = index->obj_addr.g.pg;
+        for(; curoff <= len; curoff += xfer){
+            for(int i = 0; i < NVM_NADDR_MAX; i++){
+                addrs[i].ppa = index->obj_addr.ppa;
+                addrs[i].g.pl = (i / geo->nsectors) % geo->nplanes;
+                addrs[i].g.pg = pg + i / (geo->nsectors * geo->nplanes) + pgoff;
+                addrs[i].g.sec = i % geo->nsectors;
+            }
+            pgoff += xpg;
+            int res = nvm_addr_read(dev[0], addrs, NVM_NADDR_MAX, buf+curoff-xfer, NULL, pmode, &ret);
+            if(res < 0) {
+                return EGETFAIL;
+            }
+        }
+        if(curoff > len && curoff-xfer < len){
+            int npage = (len + xfer - curoff + (geo->nplanes * geo->page_nbytes) - 1) / (geo->nplanes * geo->page_nbytes);
+            for(int i = 0; i < npage * geo->nplanes; i++){
+                addrs[i].ppa = index->obj_addr.ppa;
+                addrs[i].g.pl = (i / geo->nsectors) % geo->nplanes;
+                addrs[i].g.pg = pg + i / (geo->nsectors * geo->nplanes) + pgoff;
+                addrs[i].g.sec = i % geo->nsectors;
+            }
+            int res = nvm_addr_read(dev[0], addrs, NVM_NADDR_MAX, buf+curoff-xfer, NULL, pmode, &ret);
+            if(res < 0) {
+                return EGETFAIL;
+            }
+        }
+
+
+        if(buf != buf_r)
+            memcpy(buf_r, buf, size);
+        return SUCCESS;
+    }
+    return ENOEXIST;
+}
+
+int oss_t::oss_put(oid_t oid, char* buf_w, int len){
+    if(len > geo->nplanes*block_nbytes) return ETOOLARGE;
+    index_map_iter_t iter =  index_map.find(oid);
+    if(iter != index_map.end()){
+        return EDOEXIST;
+    }
+    index_t* index = _create_object(len);
+    if(index == NULL){
+        return EPUTFAIL;
+    }
+    index_map[oid] = index;
+    // write to SSD
+
+    char* buf = NULL;
+    if((uint64_t)buf_w % geo->sector_nbytes){
+        buf = (char*)nvm_buf_alloc(geo, len);
+        if(!buf){
+            return ENOMEMORY;
+        }
+        memcpy(buf, buf_w, len);
+    }else buf = buf_w;
+
+    struct nvm_addr addrs[NVM_NADDR_MAX];
+    struct nvm_ret ret;
+    int xfer = geo->page_nbytes * NVM_NADDR_MAX;
+    int xpg = NVM_NADDR_MAX / (geo->nplanes*geo->nsectors);
+    int curoff = xfer, pgoff = 0;
+    int pg = index->obj_addr.g.pg;
+    for(; curoff <= len; curoff += xfer){
+        for(int i = 0; i < NVM_NADDR_MAX; i++){
+            addrs[i].ppa = index->obj_addr.ppa;
+            addrs[i].g.pl = (i / geo->nsectors) % geo->nplanes;
+            addrs[i].g.pg = pg + i / (geo->nsectors * geo->nplanes) + pgoff;
+            addrs[i].g.sec = i % geo->nsectors;
+        }
+        pgoff += xpg;
+        int res = nvm_addr_write(dev[0], addrs, NVM_NADDR_MAX, buf+curoff-xfer, NULL, pmode, &ret);
+        if(res < 0) {
+            return EPUTFAIL;
+        }
+    }
+    if(curoff > len && curoff-xfer < len){
+        int npage = (len + xfer - curoff + (geo->nplanes * geo->page_nbytes) - 1) / (geo->nplanes * geo->page_nbytes);
+        for(int i = 0; i < npage * geo->nplanes; i++){
+            addrs[i].ppa = index->obj_addr.ppa;
+            addrs[i].g.pl = (i / geo->nsectors) % geo->nplanes;
+            addrs[i].g.pg = pg + i / (geo->nsectors * geo->nplanes) + pgoff;
+            addrs[i].g.sec = i % geo->nsectors;
+        }
+        int res = nvm_addr_write(dev[0], addrs, NVM_NADDR_MAX, buf+curoff-xfer, NULL, pmode, &ret);
+        if(res < 0) {
+            return EPUTFAIL;
+        }
+    }
+    return SUCCESS;
+}
+
+int oss_t::oss_del(oid_t oid){
+    index_map_iter_t iter =  index_map.find(oid);
+    if(iter != index_map.end()){
+        index_t* index = iter->second;
+        if(index->deleted) return ENOEXIST;
+        index->deleted = true;
+    }
+    return ENOEXIST;
+}
 

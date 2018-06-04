@@ -71,6 +71,7 @@ void print_meta(char *buf, int nbytes){
 
 int read_write_test(int use_meta){
     int pmode = nvm_dev_get_pmode(dev);
+    //int pmode = dev->pmode;
     char *buf_w = NULL, *buf_r = NULL, *meta_w = NULL, *meta_r = NULL;
     const int naddrs = geo->nplanes * geo->nsectors;
     struct nvm_addr addrs[naddrs];
