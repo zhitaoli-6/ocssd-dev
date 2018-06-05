@@ -9,10 +9,10 @@
                 msg, __FILE__, __LINE__); \
     }while(0)
 
-static char nvm_dev_path[NVM_DEV_PATH_LEN] = "/dev/nvme0n1";
+static char nvm_dev_path[NVM_DEV_PATH_LEN] = "/dev/nvme1n1";
 
 static int channel = 0;
-static int lun = 0;
+static int lun = 1;
 static int block = 3;
 
 

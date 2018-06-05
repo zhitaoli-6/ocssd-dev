@@ -11,7 +11,7 @@
 
 using namespace std;
 
-#define MAX_DEV 1
+#define MAX_DEV 3
 
 typedef uint64_t oid_t;
 typedef uint64_t seq_t;
@@ -37,6 +37,12 @@ struct index_t{
     bool deleted;
 };
 
+enum OSS_TYPE{
+    OSS_STRIPE = 0x0,
+    OSS_REPLICA = 0x1,
+    OSS_EC = 0x2
+};
+
 typedef map<oid_t, index_t*> index_map_t;
 typedef map<oid_t, index_t*>::iterator index_map_iter_t;
 
@@ -47,13 +53,13 @@ private:
     block_meta_t* _alloc_block();
 
 public:
-    void setup();
-    oss_t(int ndev);
+    int setup();
+    oss_t(int ndev, OSS_TYPE oss_type);
     ~oss_t();
     int oss_get(oid_t oid, char* buf, int len);
-    int oss_put(oid_t oid, char* buf, int len);
-    int oss_del(oid_t oid);
+    int oss_put(oid_t oid, char* buf, int len); int oss_del(oid_t oid);
 private:
+    OSS_TYPE oss_type;
     struct nvm_dev *dev[MAX_DEV];
     int ndevs;
 
@@ -76,24 +82,38 @@ private:
 
 
 
-oss_t::oss_t(int ndev){
+oss_t::oss_t(int ndev, OSS_TYPE oss_type){
     this->ndevs = ndev;
     cout << "construct oss" << endl;
+    switch (oss_type){
+        case OSS_STRIPE:
+        case OSS_REPLICA:
+            this->oss_type = oss_type;
+            break;
+        //case OSS_EC:
+        default:
+            printf("not supported OSS type now\n");
+    }
 }
 oss_t::~oss_t(){
+    for(int i = 0; i < ndevs; i++)
+        if(dev[i])
+            nvm_dev_close(dev[i]);
+    
     cout << "deconstruct oss" << endl;
 }
 
 
-void oss_t::setup(){
+int oss_t::setup(){
     assert(ndevs <= MAX_DEV);
     char name[128];
     for(int i = 0; i < ndevs; i++){
         sprintf(name, "/dev/nvme%01dn1", i);
+        //sprintf(name, "/dev/nvme2n1");
         dev[i] = nvm_dev_open(name);
         if(!dev[i]){
             perror(name);
-            return;
+            return ESETUP;
         }
     }
     geo = nvm_dev_get_geo(dev[0]);
@@ -107,6 +127,7 @@ void oss_t::setup(){
     full_list = NULL;
 
     seq_no = 0;
+    return 0;
 }
 
 block_meta_t* oss_t::_alloc_block(){
@@ -188,6 +209,7 @@ int oss_t::oss_get(oid_t oid, char* buf_r, int len){
         if(index->deleted) return ENOEXIST;
         // read from SSD
 
+        //printf("get oid %lu len %d\n", oid, len);
         int size = min(index->len, len);
         char* buf = NULL;
         if((uint64_t)buf_r % geo->sector_nbytes || len % (geo->nplanes * geo->page_nbytes)) {
@@ -205,7 +227,7 @@ int oss_t::oss_get(oid_t oid, char* buf_r, int len){
         int xpg = NVM_NADDR_MAX / (geo->nplanes*geo->nsectors);
         int curoff = xfer, pgoff = 0;
         int pg = index->obj_addr.g.pg;
-        for(; curoff <= len; curoff += xfer){
+        for(; curoff <= size; curoff += xfer){
             for(int i = 0; i < naddr; i++){
                 addrs[i].ppa = index->obj_addr.ppa;
                 addrs[i].g.pl = (i / geo->nsectors) % geo->nplanes;
@@ -214,17 +236,19 @@ int oss_t::oss_get(oid_t oid, char* buf_r, int len){
             }
             pgoff += xpg;
             /*
-               for(int i = 0; i < NVM_NADDR_MAX; i++){
-               nvm_addr_pr(addrs[i]);
-               }
-               */
+            for(int i = 0; i < NVM_NADDR_MAX; i++){
+                nvm_addr_pr(addrs[i]);
+            }
+            */
             int res = nvm_addr_read(dev[0], addrs, naddr, buf+curoff-xfer, NULL, pmode, &ret);
             if(res < 0) {
+                //printf("GET fails for oid %lu at offset %d\n", oid, curoff-xfer);
                 return EGETFAIL;
             }
+            //printf("GET sucs for oid %lu at offset %d\n", oid, curoff-xfer);
         }
         if(curoff > len && curoff-xfer < len){
-            int npage = (len + xfer - curoff + (geo->nplanes * geo->page_nbytes) - 1) / (geo->nplanes * geo->page_nbytes);
+            int npage = (size + xfer - curoff + (geo->nplanes * geo->page_nbytes) - 1) / (geo->nplanes * geo->page_nbytes);
             naddr = npage * geo->nplanes * geo->nsectors;
             for(int i = 0; i < naddr; i++){
                 addrs[i].ppa = index->obj_addr.ppa;
@@ -234,6 +258,7 @@ int oss_t::oss_get(oid_t oid, char* buf_r, int len){
             }
             int res = nvm_addr_read(dev[0], addrs, naddr, buf+curoff-xfer, NULL, pmode, &ret);
             if(res < 0) {
+                printf("GET fails for oid %lu at offset %d\n", oid, curoff-xfer);
                 return EGETFAIL;
             }
         }
@@ -254,7 +279,7 @@ int oss_t::oss_put(oid_t oid, char* buf_w, int len){
     index_t* index = _create_object(len);
     if(index == NULL){
         printf("create object fails\n");
-        return EPUTFAIL;
+        return ENOSPACE;
     }
     index_map[oid] = index;
     // write to SSD

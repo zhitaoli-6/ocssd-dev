@@ -14,6 +14,7 @@ oid_t get_oid(){
 
 void buf_fill(char* buf, int len){
    for(int i = 0; i < len; i++) buf[i] = 'A' + (rand()%26);
+   //for(int i = 0; i < len; i++) buf[i] = 'D';
 }
 
 
@@ -27,37 +28,49 @@ struct cli_data_t{
 
 
 int main(){
-    oss_t oss(1);
-    oss.setup();
+    oss_t oss(3, OSS_STRIPE);
+    if(oss.setup() < 0) return 0;
 
-    //srand(time(0));
     srand(0);
+    //srand(time(0));
     seq_no = 0;
-    int ntimes = 65;
+    int ntimes = 64;
     char* buf;
     map<oid_t, cli_data_t> mem_obj;
-    for(int t = 0; t < ntimes; t++){
-        int len = MAX_BYTES;
-        //int len = rand() % (MAX_BYTES) + 1;
+    //for(int t = 0; t < ntimes; t++){
+    int total_nbytes = 0;
+    int obj_cnt = 0;
+    char errstr[128];
+    while(obj_cnt < 1024){
+        
+        //int len = MAX_BYTES;
+        int len = rand() % (MAX_BYTES) + 1;
+        //int len = 14215666;
+        total_nbytes += len;
         buf = (char*)aligned_alloc(4096, len);
         buf_fill(buf, len);
         oid_t oid = get_oid();
         int ret = oss.oss_put(oid, buf, len);
         if(ret < 0) {
-            printf("error put %lu, len %d, ret %d\n", oid, len, ret);
-            continue;
+            printf("error put %lu, len %d, ret %d, %s\n", oid, len, ret, oss_perror(ret, errstr));
+            printf("total object size %d\n", total_nbytes);
+            if(ret == ENOSPACE){
+                //printf("total object size %d\n", total_nbytes);
+            }
+            break;
         }
         mem_obj[oid] = cli_data_t(buf, len);
+        obj_cnt ++;
         //printf("----------------\n");
     }
 
     int expected = 0;
     map<oid_t, cli_data_t>::iterator it;
+    buf = (char*)aligned_alloc(4096, MAX_BYTES);
     for(it = mem_obj.begin(); it != mem_obj.end(); it++){
-        buf = (char*)aligned_alloc(4096, MAX_BYTES);
-        int ret = oss.oss_get(it->first, buf, MAX_BYTES);
+        int ret = oss.oss_get(it->first, buf, it->second.len);
         if(ret < 0) {
-            printf("error get %lu, ret %d\n", it->first, ret); 
+            printf("error get %lu, ret %d, %s\n", it->first, ret, oss_perror(ret, errstr)); 
             continue;
         }
         if(memcmp(it->second.ptr, buf, it->second.len) != 0){
@@ -66,7 +79,8 @@ int main(){
         }
         expected ++;
     }
-    printf("[%d/%d object succeeds]\n", expected, ntimes);
+    free(buf);
+    printf("[%d/%d object succeeds]\n", expected, obj_cnt);
 error_exit:
     for(it = mem_obj.begin(); it != mem_obj.end(); it++){
         free(it->second.ptr);

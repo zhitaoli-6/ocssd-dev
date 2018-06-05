@@ -8,7 +8,7 @@ LFLAGS = -llightnvm
 ../bin/rw_test:rw_test.c
 	$(GCC) $(CFLAGS) $< -o $@ $(LFLAGS) 
 
-../bin/oss-cli:cli.cpp oss.h
+../bin/oss-cli:cli.cpp oss.h error.h bitmap.h
 	$(GXX) $(CPPFLAGS) $< -o $@ $(LFLAGS) 
 
 clean:
