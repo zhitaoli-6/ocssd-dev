@@ -1,11 +1,13 @@
-default:../bin/rw_test ../bin/oss-cli
+default:../bin/rw_perf ../bin/rw_func ../bin/oss-cli
 
-GCC = gcc
+GCC = gcc -I.
 GXX = g++
 CFLAGS = 
 LFLAGS = -llightnvm
 
-../bin/rw_test:rw_test.c
+../bin/rw_perf:tests/rw_perf.c
+	$(GCC) $(CFLAGS) $< -o $@ $(LFLAGS) 
+../bin/rw_func:tests/rw_func.c
 	$(GCC) $(CFLAGS) $< -o $@ $(LFLAGS) 
 
 ../bin/oss-cli:cli.cpp oss.h error.h bitmap.h

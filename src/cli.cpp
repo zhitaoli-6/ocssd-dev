@@ -7,6 +7,9 @@ oid_t seq_no;
 #define MAX_BYTES (1<<24)
 
 
+#define MB (1<<20)
+
+
 oid_t get_oid(){
     return seq_no++;
 }
@@ -38,22 +41,27 @@ int main(){
     char* buf;
     map<oid_t, cli_data_t> mem_obj;
     //for(int t = 0; t < ntimes; t++){
-    int total_nbytes = 0;
+    uint64_t total_nbytes = 0;
     int obj_cnt = 0;
     char errstr[128];
-    while(obj_cnt < 1024){
-        
-        //int len = MAX_BYTES;
-        int len = rand() % (MAX_BYTES) + 1;
+    struct timeval t1, t2;
+    gettimeofday(&t1, NULL);
+    while(true){
+        int len = MAX_BYTES;
+        //int len = rand() % (MAX_BYTES) + 1;
         //int len = 14215666;
         total_nbytes += len;
         buf = (char*)aligned_alloc(4096, len);
+        if(!buf){
+            printf("host does not have enough memory\n");
+            break;
+        }
         buf_fill(buf, len);
         oid_t oid = get_oid();
         int ret = oss.oss_put(oid, buf, len);
         if(ret < 0) {
             printf("error put %lu, len %d, ret %d, %s\n", oid, len, ret, oss_perror(ret, errstr));
-            printf("total object size %d\n", total_nbytes);
+            printf("total object size %lu\n", total_nbytes);
             if(ret == ENOSPACE){
                 //printf("total object size %d\n", total_nbytes);
             }
@@ -61,8 +69,10 @@ int main(){
         }
         mem_obj[oid] = cli_data_t(buf, len);
         obj_cnt ++;
-        //printf("----------------\n");
+        //printf("----successfully put oid %lu with len %d\n", oid, len);
     }
+    gettime(&t2, NULL);
+    printf("put bindwidth %.2fMB/s\n", total_nbytes * 1.0 / MB / TIMEs(t1,t2));
 
     int expected = 0;
     map<oid_t, cli_data_t>::iterator it;
@@ -79,6 +89,8 @@ int main(){
         }
         expected ++;
     }
+    gettime(&t1, NULL);
+    printf("get bindwidth %.2fMB/s\n", total_nbytes * 1.0 / MB / TIMEs(t2,t1));
     free(buf);
     printf("[%d/%d object succeeds]\n", expected, obj_cnt);
 error_exit:

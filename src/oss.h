@@ -8,6 +8,7 @@
 #include "engine.h"
 #include "error.h"
 #include "bitmap.h"
+#include "common.h"
 
 using namespace std;
 
@@ -22,10 +23,6 @@ typedef int (*oss_put_t)(char* buf, int len, oid_t* oid);
 typedef int (*oss_del_t)(oid_t oid);
 */
 
-struct block_meta_t{
-    struct nvm_addr blk_addr;
-    block_meta_t* next;
-};
 
 struct index_t{
     struct nvm_dev* dev;
@@ -35,12 +32,6 @@ struct index_t{
     int len;
 
     bool deleted;
-};
-
-enum OSS_TYPE{
-    OSS_STRIPE = 0x0,
-    OSS_REPLICA = 0x1,
-    OSS_EC = 0x2
 };
 
 typedef map<oid_t, index_t*> index_map_t;
@@ -63,24 +54,24 @@ private:
     struct nvm_dev *dev[MAX_DEV];
     int ndevs;
 
+    // now all devices are identical
+    size_t block_nbytes;
     const struct nvm_geo* geo;
     int pmode;
-    size_t block_nbytes;
-    
     int nblocks;
-    bitmap_t* blk_map;
-
     block_meta_t* work_list;
     block_meta_t* full_list;
 
-
     index_map_t index_map;
-    //inter_map_iter_t index_map_iter;
     seq_t seq_no;
 
+
+    // per device info
+    bitmap_t* blk_map[MAX_DEV];
+    
+    //engine
+    storage_engine engine;
 };
-
-
 
 oss_t::oss_t(int ndev, OSS_TYPE oss_type){
     this->ndevs = ndev;
@@ -89,6 +80,7 @@ oss_t::oss_t(int ndev, OSS_TYPE oss_type){
         case OSS_STRIPE:
         case OSS_REPLICA:
             this->oss_type = oss_type;
+            engine = storage_engine(oss_type);
             break;
         //case OSS_EC:
         default:
@@ -122,31 +114,22 @@ int oss_t::setup(){
     block_nbytes = geo->npages * geo->page_nbytes;
 
     nblocks = geo->nchannels * geo->nluns * geo->nblocks;
-    blk_map = (bitmap_t *)calloc(nblocks/8 + 1, 1);
+    for(int i = 0; i < ndevs; i++)
+        blk_map[i] = (bitmap_t *)calloc(nblocks/8 + 1, 1);
     work_list = NULL;
     full_list = NULL;
 
     seq_no = 0;
+
+    engine.ndevs = ndevs;
+    engine.geo = geo;
+    engine.nblocks = nblocks;
+
     return 0;
 }
 
 block_meta_t* oss_t::_alloc_block(){
-    block_meta_t* blk = NULL;
-    for(int i=0; i < nblocks; i++){
-        if(get_bit(blk_map, i) == 0){
-            set_bit(blk_map, i);
-            blk = (block_meta_t*)malloc(sizeof(block_meta_t));
-            blk->blk_addr.ppa = 0;
-            blk->blk_addr.g.ch = i / (geo->nluns * geo->nblocks);
-            blk->blk_addr.g.lun = (i / geo->nblocks) % geo->nluns;
-            blk->blk_addr.g.blk = i % geo->nblocks;
-            blk->next = NULL;
-            //printf("alloc block:");
-            //nvm_addr_pr(blk->blk_addr);
-            return blk;
-        }
-    }
-    return blk;
+    return engine.alloc_block(blk_map);
 }
 
 int oss_t::_get_free_space(struct nvm_addr blk_addr){
@@ -177,7 +160,7 @@ index_t* oss_t::_create_object(int len){
 
 
     index_t* index = (index_t*)malloc(sizeof(index_t));
-    index->dev = dev[0];
+    index->dev = dev[blk->devno];
     index->obj_addr.ppa = blk->blk_addr.ppa;
     index->len = len;
     index->deleted = false;
@@ -197,8 +180,9 @@ index_t* oss_t::_create_object(int len){
         //nvm_addr_pr(blk->blk_addr);
     }
 
-    printf("create object %d: use %d plane-pages. ",index->len, alloc_page);
-    nvm_addr_pr(index->obj_addr);
+    printf("create object %dB: use %d plane-pages at dev %d.",index->len, alloc_page, blk->devno);
+    printf("\n");
+//    nvm_addr_pr(index->obj_addr);
     return index;
 } 
 
@@ -210,11 +194,11 @@ int oss_t::oss_get(oid_t oid, char* buf_r, int len){
         // read from SSD
 
         //printf("get oid %lu len %d\n", oid, len);
-        int size = min(index->len, len);
+        len = min(index->len, len);
         char* buf = NULL;
         if((uint64_t)buf_r % geo->sector_nbytes || len % (geo->nplanes * geo->page_nbytes)) {
-            int pad_size = size;
-            if(size % (geo->nplanes * geo->page_nbytes)) pad_size = (size / (geo->nplanes * geo->page_nbytes) + 1) * (geo->nplanes * geo->page_nbytes);
+            int pad_size = len;
+            if(len % (geo->nplanes * geo->page_nbytes)) pad_size = (len / (geo->nplanes * geo->page_nbytes) + 1) * (geo->nplanes * geo->page_nbytes);
             buf = (char*)nvm_buf_alloc(geo, pad_size);
             if(!buf) return ENOMEMORY;
         }else buf = buf_r;
@@ -227,7 +211,7 @@ int oss_t::oss_get(oid_t oid, char* buf_r, int len){
         int xpg = NVM_NADDR_MAX / (geo->nplanes*geo->nsectors);
         int curoff = xfer, pgoff = 0;
         int pg = index->obj_addr.g.pg;
-        for(; curoff <= size; curoff += xfer){
+        for(; curoff <= len ; curoff += xfer){
             for(int i = 0; i < naddr; i++){
                 addrs[i].ppa = index->obj_addr.ppa;
                 addrs[i].g.pl = (i / geo->nsectors) % geo->nplanes;
@@ -240,7 +224,7 @@ int oss_t::oss_get(oid_t oid, char* buf_r, int len){
                 nvm_addr_pr(addrs[i]);
             }
             */
-            int res = nvm_addr_read(dev[0], addrs, naddr, buf+curoff-xfer, NULL, pmode, &ret);
+            int res = nvm_addr_read(index->dev, addrs, naddr, buf+curoff-xfer, NULL, pmode, &ret);
             if(res < 0) {
                 //printf("GET fails for oid %lu at offset %d\n", oid, curoff-xfer);
                 return EGETFAIL;
@@ -248,7 +232,7 @@ int oss_t::oss_get(oid_t oid, char* buf_r, int len){
             //printf("GET sucs for oid %lu at offset %d\n", oid, curoff-xfer);
         }
         if(curoff > len && curoff-xfer < len){
-            int npage = (size + xfer - curoff + (geo->nplanes * geo->page_nbytes) - 1) / (geo->nplanes * geo->page_nbytes);
+            int npage = (len + xfer - curoff + (geo->nplanes * geo->page_nbytes) - 1) / (geo->nplanes * geo->page_nbytes);
             naddr = npage * geo->nplanes * geo->nsectors;
             for(int i = 0; i < naddr; i++){
                 addrs[i].ppa = index->obj_addr.ppa;
@@ -256,7 +240,7 @@ int oss_t::oss_get(oid_t oid, char* buf_r, int len){
                 addrs[i].g.pg = pg + i / (geo->nsectors * geo->nplanes) + pgoff;
                 addrs[i].g.sec = i % geo->nsectors;
             }
-            int res = nvm_addr_read(dev[0], addrs, naddr, buf+curoff-xfer, NULL, pmode, &ret);
+            int res = nvm_addr_read(index->dev, addrs, naddr, buf+curoff-xfer, NULL, pmode, &ret);
             if(res < 0) {
                 printf("GET fails for oid %lu at offset %d\n", oid, curoff-xfer);
                 return EGETFAIL;
@@ -264,13 +248,14 @@ int oss_t::oss_get(oid_t oid, char* buf_r, int len){
         }
 
         if(buf != buf_r)
-            memcpy(buf_r, buf, size);
+            memcpy(buf_r, buf, len);
         return SUCCESS;
     }
     return ENOEXIST;
 }
 
 int oss_t::oss_put(oid_t oid, char* buf_w, int len){
+    printf("put oid %lu", oid);
     if(len > geo->nplanes*block_nbytes) return ETOOLARGE;
     index_map_iter_t iter =  index_map.find(oid);
     if(iter != index_map.end()){
@@ -314,7 +299,7 @@ int oss_t::oss_put(oid_t oid, char* buf_w, int len){
            nvm_addr_pr(addrs[i]);
            }
            */
-        int res = nvm_addr_write(dev[0], addrs, naddr, buf+curoff-xfer, NULL, pmode, &ret);
+        int res = nvm_addr_write(index->dev, addrs, naddr, buf+curoff-xfer, NULL, pmode, &ret);
         //printf("put %lu, len %d, res %d\n", oid, len, res);
         if(res < 0) {
             return EPUTFAIL;
@@ -329,14 +314,13 @@ int oss_t::oss_put(oid_t oid, char* buf_w, int len){
             addrs[i].g.pg = pg + i / (geo->nsectors * geo->nplanes) + pgoff;
             addrs[i].g.sec = i % geo->nsectors;
         }
-        buf = buf + curoff - xfer;
-        if(naddr * geo->sector_nbytes != len+xfer-curoff){
+        buf = buf + curoff - xfer; if(naddr * geo->sector_nbytes != len+xfer-curoff){
             char* buf_pad = (char*)nvm_buf_alloc(geo, naddr * geo->sector_nbytes);
             memset(buf_pad, 0, naddr * geo->sector_nbytes);
             memcpy(buf_pad, buf, len+xfer-curoff);
             buf = buf_pad;
         }
-        int res = nvm_addr_write(dev[0], addrs, naddr, buf, NULL, pmode, &ret);
+        int res = nvm_addr_write(index->dev, addrs, naddr, buf, NULL, pmode, &ret);
         if(res < 0) {
             return EPUTFAIL;
         }
