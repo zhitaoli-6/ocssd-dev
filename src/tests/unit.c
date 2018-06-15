@@ -101,8 +101,6 @@ int read_write_test(int use_meta){
         goto exit_naddr;
     }
 
-
-
     /* Erase */
     if (pmode) {
         addrs[0].ppa = blk_addr.ppa;
@@ -119,75 +117,51 @@ int read_write_test(int use_meta){
         DEBUG("Erase failure");
         goto exit_naddr;
     }
-    /*
+    int pg = 0;
+    size_t buf_diff = 0, meta_diff = 0;
+
     for (int i = 0; i < naddrs; ++i) {
         addrs[i].ppa = blk_addr.ppa;
 
-        addrs[i].g.pg = 0;
+        addrs[i].g.pg = pg;
         addrs[i].g.pl = (i / geo->nsectors) % geo->nplanes;
         addrs[i].g.sec = i % geo->nsectors;
     }
+    //printf("send write %d sectors\n", naddrs);
+    res = nvm_addr_write(dev, addrs, naddrs, buf_w, use_meta ? meta_w : NULL, pmode, &ret);
+    //res = nvm_addr_write(dev, addrs, naddrs, buf_w, NULL, pmode, &ret);
+
+    if (res < 0) {
+        DEBUG("Write failure");
+        goto exit_naddr;
+    }
+
     memset(buf_r, 0, buf_nbytes);
     if (use_meta)
         memset(meta_r, 0 , meta_nbytes);
+
     res = nvm_addr_read(dev, addrs, naddrs, buf_r,
             use_meta ? meta_r : NULL, pmode, &ret);
-    if(res < 0 ){
+    if (res < 0) {
         DEBUG("Read failure: command error");
+        goto exit_naddr;
     }
-    for(int i = 0; i < 52; i++) printf("%c", buf_r[i]);
-    printf("\n");
-    return 0;
-    */
+    buf_diff = compare_buffers(buf_r, buf_w, buf_nbytes);
+    if (use_meta)
+        meta_diff = compare_buffers(meta_r, meta_w, meta_nbytes);
 
-    int pg = 0;
-
-    for(; pg < 1; pg++){
-        size_t buf_diff = 0, meta_diff = 0;
-        for (int i = 0; i < naddrs; ++i) {
-            addrs[i].ppa = blk_addr.ppa;
-
-            addrs[i].g.pg = pg;
-            addrs[i].g.pl = (i / geo->nsectors) % geo->nplanes;
-            addrs[i].g.sec = i % geo->nsectors;
-        }
-        //printf("send write %d sectors\n", naddrs);
-        res = nvm_addr_write(dev, addrs, naddrs, buf_w, use_meta ? meta_w : NULL, pmode, &ret);
-        //res = nvm_addr_write(dev, addrs, naddrs, buf_w, NULL, pmode, &ret);
-
-        if (res < 0) {
-            DEBUG("Write failure");
-            goto exit_naddr;
-        }
-
-        memset(buf_r, 0, buf_nbytes);
-        if (use_meta)
-            memset(meta_r, 0 , meta_nbytes);
-
-        res = nvm_addr_read(dev, addrs, naddrs, buf_r,
-                use_meta ? meta_r : NULL, pmode, &ret);
-        if (res < 0) {
-            DEBUG("Read failure: command error");
-            goto exit_naddr;
-        }
-        buf_diff = compare_buffers(buf_r, buf_w, buf_nbytes);
-        if (use_meta)
-            meta_diff = compare_buffers(meta_r, meta_w, meta_nbytes);
-
-        if (buf_diff)
-            DEBUG("Read failure: buffer mismatch");
-        if (use_meta && meta_diff) {
-            DEBUG("Read failure: meta mismatch");
-            print_mismatch(meta_w, meta_r, meta_nbytes);
-            printf("expected:\n");
-            print_meta(meta_w, meta_nbytes, geo->meta_nbytes);
-            printf("got:\n");
-            print_meta(meta_r, meta_nbytes, geo->meta_nbytes);
-        }
-        if (buf_diff || meta_diff)
-            goto exit_naddr;
-
+    if (buf_diff)
+        DEBUG("Read failure: buffer mismatch");
+    if (use_meta && meta_diff) {
+        DEBUG("Read failure: meta mismatch");
+        print_mismatch(meta_w, meta_r, meta_nbytes);
+        printf("expected:\n");
+        print_meta(meta_w, meta_nbytes, geo->meta_nbytes);
+        printf("got:\n");
+        print_meta(meta_r, meta_nbytes, geo->meta_nbytes);
     }
+    if (buf_diff || meta_diff)
+        goto exit_naddr;
 
     failed = 0;
 exit_naddr:
@@ -205,7 +179,7 @@ int main(int argc, char **argv)
 {
     if(setup() < 0) return -1;
     //nvm_dev_pr(dev);
-    read_write_test(0);
+    read_write_test(1);
     nvm_dev_close(dev);
 
     return 0;

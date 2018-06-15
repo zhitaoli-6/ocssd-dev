@@ -1,11 +1,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <liblightnvm.h>
+#include <pthread.h>
+#include <assert.h>
 #include "common.h"
+#include "test-tool.h"
 
 #define MB (1<<20)
-
-
 #define DEBUG(msg) \
     do { \
         fprintf(stderr, "FATAL ERROR: %s (%s: Line %d)\n", \
@@ -14,14 +15,9 @@
 
 static char nvm_dev_path[NVM_DEV_PATH_LEN] = "/dev/nvme0n1";
 
-static int channel = 0;
-static int lun = 1;
-static int block = 3;
-
-
 static struct nvm_dev *dev;
 static const struct nvm_geo *geo;
-static struct nvm_addr blk_addr;
+static int pmode;
 
 int setup(void)
 {
@@ -31,211 +27,178 @@ int setup(void)
         return -1;
     }
     geo = nvm_dev_get_geo(dev);
-
-    blk_addr.ppa = 0;
-    blk_addr.g.ch = channel;
-    blk_addr.g.lun = lun;
-    blk_addr.g.blk = block;
-
+    pmode = nvm_dev_get_pmode(dev);
     return 0;
 }
 
-size_t compare_buffers(char *expected, char *actual, size_t nbytes)
-{
-    size_t diff = 0;
+struct result_per_thread{
+    uint64_t io_count;
+    double elapse;
+    int ret;
+    char padding[44];
+};
 
-    for (size_t i = 0; i < nbytes; ++i) {
-        if (expected[i] != actual[i]) {
-            ++diff;
-        }
-    }
+struct work_args{
+    struct nvm_addr *addrs;
+    struct nvm_addr blk_addr;
+    struct result_per_thread *result;
+    OPMODE_T op;
+    int iters;
+    int id;
+};
 
-    printf("diff %lu/%lu\n", diff, nbytes);
-    return diff;
-}
 
-void print_mismatch(char *expected, char *actual, size_t nbytes)
-{
-    printf("MISMATCHES:\n");
-    for (size_t i = 0; i < nbytes; ++i) {
-        if (expected[i] != actual[i]) {
-            printf("i(%06lu), expected(%c) != actual(%02d|0x%02x|%c)\n",
-                    i, expected[i], (int)actual[i], (int)actual[i], actual[i]);
-        }
-    }
-}
-void print_meta(char *buf, int nbytes){
-    for(int i = 0; i < nbytes; i+=geo->meta_nbytes){
-        for(int j = 0; j < geo->meta_nbytes; j++)
-            printf("%c", buf[i+j]);
-        printf("\n");
-    }
-}
 
-int read_write_test(int use_meta){
-    int pmode = nvm_dev_get_pmode(dev);
-    //int pmode = dev->pmode;
-    char *buf_w = NULL, *buf_r = NULL, *meta_w = NULL, *meta_r = NULL;
-    const int naddrs = NVM_NADDR_MAX;
-    //assert(naddrs = NVM_NADDR_MAX);
-    struct nvm_addr addrs[naddrs];
+void* sim_random_req(void *void_args){
+    struct work_args* args = void_args;
+    struct nvm_addr blk_addr = args->blk_addr;
+    struct nvm_addr *addrs = args->addrs;
     struct nvm_ret ret;
-    ssize_t res;
-    size_t buf_nbytes, meta_nbytes;
-    int failed = 1;
+    OPMODE_T op = args->op;
+    printf("thread %d begin\n", args->id);
+    //nvm_addr_pr(args->blk_addr);
+    
+    int iters = args->iters;
+    
+    assert(geo->nchannels == 2 && geo->nluns == 8);
+    int naddr = geo->nplanes  * geo->nsectors;
 
-    printf("INFO: N naddrs(%d), use_meta(%d) on ", naddrs, use_meta);
-    nvm_addr_pr(blk_addr);
-
-    buf_nbytes = naddrs * geo->sector_nbytes;
-    meta_nbytes = naddrs * geo->meta_nbytes;
-    //printf("INFO plane %d, nsector %d, meta_byte %d\n", geo->nplanes, geo->nsectors, geo->meta_nbytes);
-
-    buf_w = nvm_buf_alloc(geo, buf_nbytes);	// Setup buffers
-    if (!buf_w) {
-        DEBUG("nvm_buf_alloc");
-        goto exit_naddr;
+    char *buf = nvm_buf_alloc(geo, naddr * geo->sector_nbytes);
+    if(!buf) {
+        printf("not enough memory\n");
+        return NULL;
     }
-    for(size_t i = 0; i < buf_nbytes; i++)
-        buf_w[i] = 'D';
-    //nvm_buf_fill(buf_w, buf_nbytes);
+    nvm_buf_fill(buf, naddr * geo->sector_nbytes);
 
-    meta_w = nvm_buf_alloc(geo, meta_nbytes);
-    if (!meta_w) {
-        DEBUG("nvm_buf_alloc");
-        goto exit_naddr;
-    }
-    for (size_t i = 0; i < meta_nbytes; ++i) {
-        meta_w[i] = 'M';
-    }
-    //for (int i = 0; i < naddrs; ++i) {
-    //    char meta_descr[meta_nbytes];
-    //    int sec = i % geo->nsectors;
-    //    int pl = (i / geo->nsectors) % geo->nplanes;
-
-    //    sprintf(meta_descr, "[P(%02d),S(%02d)]", pl, sec);
-    //    //sprintf(meta_descr, "hellohello");
-    //    if (strlen(meta_descr) > geo->meta_nbytes) {
-    //        DEBUG("Failed constructing meta buffer");
-    //        goto exit_naddr;
-    //    }
-
-    //    memcpy(meta_w + i * geo->meta_nbytes, meta_descr, strlen(meta_descr));
-    //}
-
-
-    buf_r = nvm_buf_alloc(geo, buf_nbytes);
-    if (!buf_r) {
-        DEBUG("nvm_buf_alloc");
-        goto exit_naddr;
-    }
-
-    meta_r = nvm_buf_alloc(geo, meta_nbytes);
-    if (!meta_r) {
-        DEBUG("nvm_buf_alloc");
-        goto exit_naddr;
-    }
-
-    /* Erase */
-    if (pmode) {
-        addrs[0].ppa = blk_addr.ppa;
-    } else {
-        for (size_t pl = 0; pl < geo->nplanes; ++pl) {
-            addrs[pl].ppa = blk_addr.ppa;
-
-            addrs[pl].g.pl = pl;
-        }
-    }
-
-    res = nvm_addr_erase(dev, addrs, pmode ? 1 : geo->nplanes, pmode, &ret);
-    if (res < 0) {
-        DEBUG("Erase failure");
-        goto exit_naddr;
-    }
-    int pg = 7;
-    size_t buf_diff = 0, meta_diff = 0;
-
-    uint64_t tbytes = geo->nblocks * geo->npages * NVM_NADDR_MAX * geo->sector_nbytes;
-    double tw = 0, tr = 0;
+    double elapse = 0.0;
     struct timeval t1, t2;
-    for(int pg = 0; pg < geo->npages; pg++){
-        for(int blk = 0; blk < geo->nblocks; blk++){
-            for (int i = 0; i < NVM_NADDR_MAX; ++i) {
-                addrs[i].ppa = 0;
-                addrs[i].g.ch = 0;
-                addrs[i].g.lun = i / 8;
 
-                addrs[i].g.blk = blk;
-                addrs[i].g.pg = pg;
-                addrs[i].g.pl = (i % 8 / geo->nsectors) % geo->nplanes;
-                addrs[i].g.sec = i % geo->nsectors;
-            }
-            //printf("send write %d sectors\n", naddrs);
-            gettime(&t1, NULL);
-            res = nvm_addr_write(dev, addrs, naddrs, buf_w, use_meta ? meta_w : NULL, pmode, &ret);
-            gettime(&t2, NULL);
-            tw += TIMEs(t1, t2);
-            
-            //res = nvm_addr_write(dev, addrs, naddrs, buf_w, NULL, pmode, &ret);
+    int iter = 0;
+    while(iter < iters){
+        int magic = iter;
+        //int ch = magic % geo->nchannels;
+        //int lun = magic % geo->nluns;
+        //int blk = 0;
+        int ch = blk_addr.g.ch;
+        int lun = blk_addr.g.lun;
+        int blk = blk_addr.g.blk;
+        int pg = magic % geo->npages;
 
-            if (res < 0) {
-                DEBUG("Write failure");
-                goto exit_naddr;
-            }
-
-            memset(buf_r, 0, buf_nbytes);
-            if (use_meta)
-                memset(meta_r, 0 , meta_nbytes);
-
-            gettime(&t1, NULL);
-            res = nvm_addr_read(dev, addrs, naddrs, buf_r,
-                    use_meta ? meta_r : NULL, pmode, &ret);
-            gettime(&t2, NULL);
-            tr += TIMEs(t1, t2);
-            if (res < 0) {
-                DEBUG("Read failure: command error");
-                goto exit_naddr;
-            }
-            /*
-            buf_diff = compare_buffers(buf_r, buf_w, buf_nbytes);
-            if (use_meta)
-                meta_diff = compare_buffers(meta_r, meta_w, meta_nbytes);
-
-            if (buf_diff)
-                DEBUG("Read failure: buffer mismatch");
-            if (use_meta && meta_diff) {
-                DEBUG("Read failure: meta mismatch");
-                print_mismatch(meta_w, meta_r, meta_nbytes);
-                printf("expected:\n");
-                print_meta(meta_w, meta_nbytes);
-                printf("got:\n");
-                print_meta(meta_r, meta_nbytes);
-            }
-            if (buf_diff || meta_diff)
-                goto exit_naddr;
-                */
+        for(int i = 0; i < naddr; i++){
+            addrs[i].ppa = 0;
+            addrs[i].g.ch = ch; 
+            addrs[i].g.lun = lun;
+            addrs[i].g.blk = blk;
+            addrs[i].g.pg = pg;
+            addrs[i].g.pl = i / geo->nsectors;
+            addrs[i].g.sec = i % geo->nsectors;
         }
+        int res = 0;
+        gettime(&t1, NULL);
+        if(op == WRITE)
+            res = nvm_addr_write(dev, addrs, naddr, buf, NULL, pmode, &ret);
+        else if(op == READ){
+            res = nvm_addr_read(dev, addrs, naddr, buf, NULL, pmode, &ret);
+        }
+        gettime(&t2, NULL);
+        elapse += TIMEs(t1, t2);
+        if(res < 0){
+            DEBUG("Read/Write failure: command error");
+            return NULL;
+        }
+        //printf("page %d is ok\n", pg);
+        iter ++;
     }
-    printf("write bindwidth %.2f, read %.2f\n", tbytes*1.0/MB/tw, tbytes*1.0/MB/tr);
-
-    failed = 0;
-exit_naddr:
-    nvm_buf_free(meta_r);
-    nvm_buf_free(buf_r);
-    nvm_buf_free(meta_w);
-    nvm_buf_free(buf_w);
-
-    if (failed)
-        printf("Failure on PPA(0x%016lx)\n", blk_addr.ppa);
-    return 0;
+    args->result->ret = 0;
+    args->result->io_count = iters;
+    args->result->elapse = elapse;
+    free(buf);
+    return NULL;
 }
+
+void usage(){
+    printf("./rw_perf thread_count(1..16) read/write\n");
+}
+
+
 
 int main(int argc, char **argv)
 {
+    assert(argc == 3);
+    //printf("%lu\n", sizeof(struct result_per_thread));
+    assert(sizeof(struct result_per_thread) == 64);
+    int npu = atoi(argv[1]);
+    assert(npu >= 1 && npu <= 16);
+    OPMODE_T op = READ;
+    if(strcmp("read", argv[2]) == 0) op = READ ;
+    else if(strcmp("write", argv[2]) == 0) op = WRITE;
+    else {
+        usage();
+        return 0;
+    }
+    
     if(setup() < 0) return -1;
     //nvm_dev_pr(dev);
-    read_write_test(0);
-    nvm_dev_close(dev);
+    //int npu = geo->nchannels * geo->nluns;
+    
+    struct nvm_addr addrs[NVM_NADDR_MAX];
+    struct nvm_addr blk_addr[npu];
+    struct nvm_ret  ret;
+    /* Erase */
+    printf("Erase block 0 on every PU\n");
+    for(int i = 0; i < geo->nchannels * geo->nluns; i++) {
+        blk_addr[i].ppa = 0;
+        blk_addr[i].g.ch = i % geo->nchannels;
+        blk_addr[i].g.lun = i / geo->nchannels;
+        blk_addr[i].g.blk = 0;
+        if (pmode) {
+            addrs[0].ppa = blk_addr[i].ppa;
+        } else {
+            for (size_t pl = 0; pl < geo->nplanes; ++pl) {
+                addrs[pl].ppa = blk_addr[i].ppa;
+                addrs[pl].g.pl = pl;
+            }
+        }
+        int res = nvm_addr_erase(dev, addrs, pmode ? 1 : geo->nplanes, pmode, &ret);
+        if (res < 0) {
+            DEBUG("Erase failure");
+            return 0;
+        }
+    }
+    printf("begin %d io threads\n", npu);
+    struct nvm_addr thread_blk_addr[npu];
+    struct work_args args[npu];
+    pthread_t* workers = (pthread_t *)malloc(sizeof(pthread_t) * npu);
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    for(int i = 0; i < npu; i++){
+        args[i].blk_addr = blk_addr[i];
+        args[i].id = i;
+        args[i].addrs = (struct nvm_addr*)malloc(NVM_NADDR_MAX * sizeof(struct nvm_addr));
+        args[i].result = (struct result_per_thread*)malloc(sizeof(struct result_per_thread));
+        memset(args[i].result, 0, sizeof(struct result_per_thread));
+        args[i].result->ret = -1;
+        args[i].op = op;
+        args[i].iters = 32;
+        pthread_create(&workers[i], &attr, sim_random_req, &args[i]);
+    }
 
+    for(int i = 0; i < npu; i++){
+        pthread_join(workers[i], NULL);
+    }
+
+    for(int i = 0; i < npu; i++){
+        nvm_addr_pr(args[i].blk_addr);
+        if(args[i].result->ret == 0)
+            printf("ret %d, avg latency %.6fus (elapse %.6fs, io count %lu)\n", args[i].result->ret, 1000000 * args[i].result->elapse / args[i].result->io_count, args[i].result->elapse, args[i].result->io_count );
+        else printf("error in this block\n");
+    }
+
+    nvm_dev_close(dev);
+    for(int i = 0; i < npu;i ++) {
+        free(args[i].addrs);
+        free(args[i].result);
+    }
+    free(workers);
     return 0;
 }
