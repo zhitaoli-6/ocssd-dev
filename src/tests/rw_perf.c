@@ -60,7 +60,7 @@ void* sim_random_req(void *void_args){
     
     int iters = args->iters;
     
-    assert(geo->nchannels == 2 && geo->nluns == 8);
+    //assert(geo->nchannels == 2 && geo->nluns == 8);
     int naddr = geo->nplanes  * geo->nsectors;
 
     char *buf = nvm_buf_alloc(geo, naddr * geo->sector_nbytes);
@@ -76,6 +76,7 @@ void* sim_random_req(void *void_args){
     int iter = 0;
     while(iter < iters){
         int magic = iter;
+        //int magic = rand() % 32;
         //int ch = magic % geo->nchannels;
         //int lun = magic % geo->nluns;
         //int blk = 0;
@@ -116,6 +117,7 @@ void* sim_random_req(void *void_args){
     return NULL;
 }
 
+
 void usage(){
     printf("./rw_perf thread_count(1..16) read/write\n");
 }
@@ -146,7 +148,7 @@ int main(int argc, char **argv)
     struct nvm_ret  ret;
     /* Erase */
     printf("Erase block 0 on every PU\n");
-    for(int i = 0; i < geo->nchannels * geo->nluns; i++) {
+    for(int i = 0; i < npu; i++) {
         blk_addr[i].ppa = 0;
         blk_addr[i].g.ch = i % geo->nchannels;
         blk_addr[i].g.lun = i / geo->nchannels;
@@ -171,6 +173,9 @@ int main(int argc, char **argv)
     pthread_t* workers = (pthread_t *)malloc(sizeof(pthread_t) * npu);
     pthread_attr_t attr;
     pthread_attr_init(&attr);
+    struct timeval t1, t2;
+    gettime(&t1, NULL);
+    int iters = 512;
     for(int i = 0; i < npu; i++){
         args[i].blk_addr = blk_addr[i];
         args[i].id = i;
@@ -179,20 +184,25 @@ int main(int argc, char **argv)
         memset(args[i].result, 0, sizeof(struct result_per_thread));
         args[i].result->ret = -1;
         args[i].op = op;
-        args[i].iters = 32;
+        args[i].iters = iters;
         pthread_create(&workers[i], &attr, sim_random_req, &args[i]);
     }
 
     for(int i = 0; i < npu; i++){
         pthread_join(workers[i], NULL);
     }
+    gettime(&t2, NULL);
 
     for(int i = 0; i < npu; i++){
         nvm_addr_pr(args[i].blk_addr);
-        if(args[i].result->ret == 0)
-            printf("ret %d, avg latency %.6fus (elapse %.6fs, io count %lu)\n", args[i].result->ret, 1000000 * args[i].result->elapse / args[i].result->io_count, args[i].result->elapse, args[i].result->io_count );
+        if(args[i].result->ret == 0){
+            int iocnt = args[i].result->io_count;
+            double elapse = args[i].result->elapse;
+            printf("avg latency %.6fus. bindwidth %.2fMB/s\n", elapse*1000000/iocnt, iocnt * geo->nplanes * geo->page_nbytes / elapse / 1000000);
+        }
         else printf("error in this block\n");
     }
+    printf("total bindwidth %.2fMB/s\n", 1ll * npu * iters * geo->nplanes * geo->page_nbytes / TIMEs(t1, t2) / 1000000 );
 
     nvm_dev_close(dev);
     for(int i = 0; i < npu;i ++) {
