@@ -27,7 +27,8 @@ int setup(void)
         return -1;
     }
     geo = nvm_dev_get_geo(dev);
-    pmode = nvm_dev_get_pmode(dev);
+    //pmode = nvm_dev_get_pmode(dev);
+    pmode = 0;
     return 0;
 }
 
@@ -61,7 +62,8 @@ void* sim_random_req(void *void_args){
     int iters = args->iters;
     
     //assert(geo->nchannels == 2 && geo->nluns == 8);
-    int naddr = geo->nplanes  * geo->nsectors;
+    //int naddr = geo->nplanes  * geo->nsectors;
+    int naddr = geo->nsectors;
 
     char *buf = nvm_buf_alloc(geo, naddr * geo->sector_nbytes);
     if(!buf) {
@@ -175,7 +177,7 @@ int main(int argc, char **argv)
     pthread_attr_init(&attr);
     struct timeval t1, t2;
     gettime(&t1, NULL);
-    int iters = 512;
+    int iters = 32;
     for(int i = 0; i < npu; i++){
         args[i].blk_addr = blk_addr[i];
         args[i].id = i;
