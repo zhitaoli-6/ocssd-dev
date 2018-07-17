@@ -28,7 +28,7 @@ static int sbull_major = 0;
 module_param(sbull_major, int, 0);
 static int hardsect_size = 512;
 module_param(hardsect_size, int, 0);
-static int nsectors = 1024;	/* How big the drive is */
+static int nsectors = 1024*128;	/* How big the drive is */
 module_param(nsectors, int, 0);
 static int ndevices = 1;
 module_param(ndevices, int, 0);
@@ -41,7 +41,7 @@ enum {
 	RM_FULL    = 1,	/* The full-blown version */
 	RM_NOQUEUE = 2,	/* Use make_request */
 };
-static int request_mode = RM_NOQUEUE;
+static int request_mode = RM_FULL;
 module_param(request_mode, int, 0);
 
 /*
@@ -82,10 +82,9 @@ static struct sbull_dev *Devices = NULL;
  * Handle an I/O request.
  */
 static void sbull_transfer(struct sbull_dev *dev, unsigned long sector,
-		unsigned long nsect, char *buffer, int write)
+		unsigned long nbytes, char *buffer, int write)
 {
 	unsigned long offset = sector*KERNEL_SECTOR_SIZE;
-	unsigned long nbytes = nsect*KERNEL_SECTOR_SIZE;
 
 	if ((offset + nbytes) > dev->size) {
 		printk (KERN_NOTICE "Beyond-end write (%ld %ld)\n", offset, nbytes);
@@ -136,12 +135,10 @@ static int sbull_xfer_bio(struct sbull_dev *dev, struct bio *bio)
 	/* Do each segment independently. */
 	bio_for_each_segment(bvec, bio, i) {
 		sector_t sector = i.bi_sector;
-		//char *buffer = __bio_kmap_atomic(bio, i, KM_USER0);
 		char *buffer = kmap_atomic(bvec.bv_page);
 		unsigned long offset = bvec.bv_offset;
 		sbull_transfer(dev, sector, bvec.bv_len,
-				buffer+offset, bio_data_dir(bio) == WRITE);
-		//sector += bvec.bv_len;
+				buffer+offset, op_is_write(bio_op(bio)));
 		kunmap_atomic(buffer);
 	}
 	return 0; /* Always "succeed" */
@@ -150,16 +147,13 @@ static int sbull_xfer_bio(struct sbull_dev *dev, struct bio *bio)
 /*
  * Transfer a full request.
  */
-static int sbull_xfer_request(struct sbull_dev *dev, struct request *req)
+static void sbull_xfer_request(struct sbull_dev *dev, struct request *req)
 {
 	struct bio *bio;
-	int nsect = 0;
     
 	__rq_for_each_bio(bio, req) {
 		sbull_xfer_bio(dev, bio);
-		nsect += bio->bi_iter.bi_size/KERNEL_SECTOR_SIZE;
 	}
-	return nsect;
 }
 
 
@@ -170,7 +164,6 @@ static int sbull_xfer_request(struct sbull_dev *dev, struct request *req)
 static void sbull_full_request(struct request_queue *q)
 {
 	struct request *req;
-	int sectors_xferred;
 	struct sbull_dev *dev = q->queuedata;
 
 	while ((req = blk_fetch_request(q)) != NULL) {
@@ -180,8 +173,8 @@ static void sbull_full_request(struct request_queue *q)
 			__blk_end_request(req, -EIO, blk_rq_cur_bytes(req));
 			continue;
 		}
-		sectors_xferred = sbull_xfer_request(dev, req);
-		__blk_end_request(req, 0, sectors_xferred);
+		sbull_xfer_request(dev, req);
+		__blk_end_request_all(req, 0);
 	}
 }
 
@@ -192,7 +185,7 @@ static void sbull_full_request(struct request_queue *q)
  */
 static blk_qc_t sbull_make_request(struct request_queue *q, struct bio *bio)
 {
-	struct sbull_dev *dev = q->queuedata;
+	struct sbull_dev *dev = bio->bi_disk->private_data;
 	int status;
 
 	status = sbull_xfer_bio(dev, bio);
@@ -368,6 +361,8 @@ static void setup_device(struct sbull_dev *dev, int which)
         	/* fall into.. */
 	
 	    case RM_SIMPLE:
+		printk(KERN_NOTICE "Bad request mode %d\n", request_mode);
+		goto out_vfree;
 		dev->queue = blk_init_queue(sbull_request, &dev->lock);
 		if (dev->queue == NULL)
 			goto out_vfree;

@@ -23,13 +23,18 @@ MODULE_LICENSE("GPL");
 #define MY_BLOCK_MAJOR		240
 #define MY_BLKDEV_NAME		"mybdev"
 #define MY_BLOCK_MINORS		1
-#define NR_SECTORS		(1024*4)
+#define NR_SECTORS		(1024*128)
 
 #define KERNEL_SECTOR_SIZE	512
 
 /* TODO 6/0: use bios for read/write requests */
-#define USE_BIO_TRANSFER	0
+#define USE_BIO_TRANSFER 1
 
+enum {
+	RM_FULL  = 0,	/* The extra-simple request function */
+	RM_NOQUEUE = 1,	/* Use make_request */
+};
+static int request_mode = RM_NOQUEUE;
 
 static struct my_block_dev {
 	spinlock_t lock;
@@ -78,12 +83,13 @@ static void my_xfer_request(struct my_block_dev *dev, struct request *req)
 	struct bio_vec bvec;
 	struct req_iterator iter;
 
+	char *buffer;
 	rq_for_each_segment(bvec, req, iter) {
 		sector_t sector = iter.iter.bi_sector;
 		unsigned long offset = bvec.bv_offset;
 		size_t len = bvec.bv_len;
 		int dir = bio_data_dir(iter.bio);
-		char *buffer = kmap_atomic(bvec.bv_page);
+		buffer = kmap_atomic(bvec.bv_page);
 		printk(KERN_LOG_LEVEL "%s: buf %8p offset %lu len %u dir %d\n", __func__, buffer, offset, len, dir);
 
 		/* TODO 6/3: copy bio data to device buffer */
@@ -92,6 +98,32 @@ static void my_xfer_request(struct my_block_dev *dev, struct request *req)
 	}
 }
 #endif
+
+
+static blk_qc_t my_block_make_request(struct request_queue *q, struct bio *bio){
+	struct my_block_dev *dev = bio->bi_disk->private_data;
+	struct bio_vec bvec;
+	sector_t sector;
+	struct bvec_iter iter;
+	char *buffer = NULL;
+
+	sector = bio->bi_iter.bi_sector;
+	if (bio_end_sector(bio) > get_capacity(bio->bi_disk))
+		return BLK_QC_T_NONE;
+	printk(KERN_LOG_LEVEL "%s pos %u dir=%c\n", __func__, sector, op_is_write(bio_op(bio)) ? 'W':'R');
+
+	bio_for_each_segment(bvec, bio, iter) {
+		sector = iter.bi_sector;
+
+		buffer = kmap_atomic(bvec.bv_page);
+		my_block_transfer(dev, sector, bvec.bv_len, buffer+bvec.bv_offset, op_is_write(bio_op(bio)));
+		kunmap_atomic(buffer);
+		
+	}
+
+	bio_endio(bio);
+	return BLK_QC_T_NONE;
+}
 
 static void my_block_request(struct request_queue *q)
 {
@@ -147,14 +179,29 @@ static int create_block_device(struct my_block_dev *dev)
 		goto out_vmalloc;
 	}
 
+
 	/* initialize the I/O queue */
 	spin_lock_init(&dev->lock);
-	dev->queue = blk_init_queue(my_block_request, &dev->lock);
-	if (dev->queue == NULL) {
-		printk(KERN_ERR "blk_init_queue: out of memory\n");
-		err = -ENOMEM;
-		goto out_blk_init;
+
+	switch (request_mode) {
+		case RM_NOQUEUE:
+			dev->queue = blk_alloc_queue(GFP_KERNEL);
+			if (dev->queue == NULL)
+				goto out_vfree;
+			blk_queue_make_request(dev->queue, my_block_make_request);
+			break;
+
+		default:
+			printk(KERN_NOTICE "Bad request mode %d, using FULL\n", request_mode);
+			/* fall into.. */
+
+		case RM_FULL:
+			dev->queue = blk_init_queue(my_block_request, &dev->lock);
+			if (dev->queue == NULL)
+				goto out_vfree;
+			break;
 	}
+
 	blk_queue_logical_block_size(dev->queue, KERNEL_SECTOR_SIZE);
 	dev->queue->queuedata = dev;
 
@@ -180,7 +227,7 @@ static int create_block_device(struct my_block_dev *dev)
 
 out_alloc_disk:
 	blk_cleanup_queue(dev->queue);
-out_blk_init:
+out_vfree:
 	vfree(dev->data);
 out_vmalloc:
 	return err;

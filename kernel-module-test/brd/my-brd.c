@@ -354,7 +354,7 @@ MODULE_PARM_DESC(max_part, "Num Minors to reserve between devices");
 
 MODULE_LICENSE("GPL");
 
-static int myramdisk_major = 241;
+static int myramdisk_major = 251;
 
 
 //MODULE_ALIAS_BLOCKDEV_MAJOR(myramdisk_major);
@@ -498,7 +498,7 @@ static int __init brd_init(void)
 	 *	dynamically.
 	 */
 
-	if (register_blkdev(myramdisk_major, "myramdisk"))
+	if (register_blkdev(myramdisk_major, "ramdisk"))
 		return -EIO;
 
 	if (unlikely(!max_part))
