@@ -1,1 +1,0 @@
-cmd_/home/femu/ocssd-dev/kernel-module-test/kernel/ram-disk.ko := ld -r -m elf_x86_64 -T ./scripts/module-common.lds --build-id  -o /home/femu/ocssd-dev/kernel-module-test/kernel/ram-disk.ko /home/femu/ocssd-dev/kernel-module-test/kernel/ram-disk.o /home/femu/ocssd-dev/kernel-module-test/kernel/ram-disk.mod.o ;  true
