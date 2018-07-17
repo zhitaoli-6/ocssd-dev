@@ -27,17 +27,48 @@
 static unsigned char buffer[SECTOR_SIZE];
 static unsigned char buffer_copy[SECTOR_SIZE];
 
+
+static unsigned char w_buf[NR_SECTORS][SECTOR_SIZE];
+static unsigned char r_buf[NR_SECTORS][SECTOR_SIZE];
+
+
+static void write_sector(int fd, size_t sector){
+	int i;
+	for (i = 0; i < sizeof(buffer) / sizeof(buffer[0]); i++)
+		w_buf[sector][i] = rand() % max_elem_value(buffer[0]);
+	lseek(fd, sector * SECTOR_SIZE, SEEK_SET);
+	write(fd, w_buf[sector], sizeof(buffer));
+
+	fsync(fd);
+}
+
+static void check_sector(int fd, size_t sector){
+	lseek(fd, sector * SECTOR_SIZE, SEEK_SET);
+	read(fd, r_buf[sector], sizeof(buffer));
+	printf("test sector %3lu ... ", sector);
+	if (memcmp(r_buf[sector], w_buf[sector], sizeof(buffer_copy)) == 0)
+		printf("passed\n");
+	else
+		printf("failed\n");
+}
+
+
+
 static void test_sector(int fd, size_t sector)
 {
 	int i;
 
+
 	for (i = 0; i < sizeof(buffer) / sizeof(buffer[0]); i++)
 		buffer[i] = rand() % max_elem_value(buffer[0]);
+
 
 	lseek(fd, sector * SECTOR_SIZE, SEEK_SET);
 	write(fd, buffer, sizeof(buffer));
 
 	fsync(fd);
+
+	//system("echo 3 >> /proc/sys/vm/drop_caches");
 
 	lseek(fd, sector * SECTOR_SIZE, SEEK_SET);
 	read(fd, buffer_copy, sizeof(buffer_copy));
@@ -55,13 +86,16 @@ int main(void)
 	size_t i;
 	int back_errno;
 
+/*
 	printf("insmod ../kernel/" MODULE_NAME ".ko\n");
 	system("insmod ../kernel/" MODULE_NAME ".ko\n");
 	sleep(1);
 
 	printf("mknod " DEVICE_NAME " b " MY_BLOCK_MAJOR " " MY_BLOCK_MINOR "\n");
 	system("mknod " DEVICE_NAME " b " MY_BLOCK_MAJOR " " MY_BLOCK_MINOR "\n");
-	sleep(1);
+	printf("mknod finish, sleep 5s...\n");
+	sleep(5);
+*/
 
 	fd = open(DEVICE_NAME, O_RDWR);
 	if (fd < 0) {
@@ -72,14 +106,24 @@ int main(void)
 	}
 
 	srand(time(NULL));
-	for (i = 0; i < NR_SECTORS; i++)
-		test_sector(fd, i);
+	//for(i = 0; i < NR_SECTORS; i++)
+	//test_sector(fd, i);
+	int nr = 1;
+	for (i = 0; i < nr; i++){
+		write_sector(fd, i);
+	}
+
+	for(i = 0; i < nr; i++){
+		check_sector(fd, i);
+	}
 
 	close(fd);
 
+/*
 	sleep(1);
 	printf("rmmod " MODULE_NAME "\n");
 	system("rmmod " MODULE_NAME "\n");
+*/
 
 	return 0;
 }

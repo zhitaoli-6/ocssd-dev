@@ -1,13 +1,13 @@
 
 GCC = gcc
 
-default: ram-disk-test
+default:blk-test 
 
-ram-disk-test: ram-dist-test.c
+blk-test: ram-disk-test.c
 	$(GCC) $(CFLAGS) $< -o $@ $(LFLAGS) 
 
 .PHONY: clean
 
 clean:
-	-rm -f *~ *.o ram-disk-test
+	-rm -f *~ *.o blk-test
 

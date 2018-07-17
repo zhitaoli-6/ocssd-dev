@@ -23,7 +23,7 @@ MODULE_LICENSE("GPL");
 #define MY_BLOCK_MAJOR		240
 #define MY_BLKDEV_NAME		"mybdev"
 #define MY_BLOCK_MINORS		1
-#define NR_SECTORS		128
+#define NR_SECTORS		(1024*4)
 
 #define KERNEL_SECTOR_SIZE	512
 
