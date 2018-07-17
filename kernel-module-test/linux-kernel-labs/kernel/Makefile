@@ -1,21 +1,12 @@
-# Comment/uncomment the following line to disable/enable debugging
-#DEBUG = y
-
-
-# Add your debugging flag (or not) to CFLAGS
-ifeq ($(DEBUG),y)
-  DEBFLAGS = -O -g -DSBULL_DEBUG # "-O" is needed to expand inlines
-else
-  DEBFLAGS = -O2
-endif
+DEBFLAGS = -O2
 
 EXTRA_CFLAGS += $(DEBFLAGS)
-EXTRA_CFLAGS += -I..
+#EXTRA_CFLAGS += -I..
 
 ifneq ($(KERNELRELEASE),)
 # call from kernel build system
 
-obj-m	:= my-brd.o
+obj-m	:= ram-disk.o
 
 else
 

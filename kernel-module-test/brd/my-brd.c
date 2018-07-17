@@ -323,15 +323,24 @@ static int brd_rw_page(struct block_device *bdev, sector_t sector,
 	return err;
 }
 
+static int brd_open(struct block_device *brd, fmode_t mode){
+	return 0;
+}
+
+static void brd_release(struct gendisk *disk, fmode_t mode){
+}
+
 static const struct block_device_operations brd_fops = {
 	.owner =		THIS_MODULE,
 	.rw_page =		brd_rw_page,
+	.open = brd_open,
+	.release = brd_release
 };
 
 /*
  * And now the modules code and kernel interface.
  */
-static int rd_nr = 4;
+static int rd_nr = 1;
 module_param(rd_nr, int, S_IRUGO);
 MODULE_PARM_DESC(rd_nr, "Maximum number of brd devices");
 
@@ -344,8 +353,12 @@ module_param(max_part, int, S_IRUGO);
 MODULE_PARM_DESC(max_part, "Num Minors to reserve between devices");
 
 MODULE_LICENSE("GPL");
-MODULE_ALIAS_BLOCKDEV_MAJOR(RAMDISK_MAJOR);
-MODULE_ALIAS("rd");
+
+static int myramdisk_major = 241;
+
+
+//MODULE_ALIAS_BLOCKDEV_MAJOR(myramdisk_major);
+//MODULE_ALIAS("rd");
 
 #ifndef MODULE
 /* Legacy boot options - nonmodular */
@@ -393,8 +406,8 @@ static struct brd_device *brd_alloc(int i)
 	disk = brd->brd_disk = alloc_disk(max_part);
 	if (!disk)
 		goto out_free_queue;
-	disk->major		= RAMDISK_MAJOR;
-	disk->first_minor	= i * max_part;
+	disk->major		= myramdisk_major;
+	disk->first_minor	= 0;
 	disk->fops		= &brd_fops;
 	disk->private_data	= brd;
 	disk->queue		= brd->brd_queue;
@@ -485,7 +498,7 @@ static int __init brd_init(void)
 	 *	dynamically.
 	 */
 
-	if (register_blkdev(RAMDISK_MAJOR, "ramdisk"))
+	if (register_blkdev(myramdisk_major, "myramdisk"))
 		return -EIO;
 
 	if (unlikely(!max_part))
@@ -503,7 +516,7 @@ static int __init brd_init(void)
 	list_for_each_entry(brd, &brd_devices, brd_list)
 		add_disk(brd->brd_disk);
 
-	blk_register_region(MKDEV(RAMDISK_MAJOR, 0), 1UL << MINORBITS,
+	blk_register_region(MKDEV(myramdisk_major, 0), 1UL << MINORBITS,
 				  THIS_MODULE, brd_probe, NULL, NULL);
 
 	pr_info("brd: module loaded\n");
@@ -514,7 +527,7 @@ out_free:
 		list_del(&brd->brd_list);
 		brd_free(brd);
 	}
-	unregister_blkdev(RAMDISK_MAJOR, "ramdisk");
+	unregister_blkdev(myramdisk_major, "ramdisk");
 
 	pr_info("brd: module NOT loaded !!!\n");
 	return -ENOMEM;
@@ -527,8 +540,8 @@ static void __exit brd_exit(void)
 	list_for_each_entry_safe(brd, next, &brd_devices, brd_list)
 		brd_del_one(brd);
 
-	blk_unregister_region(MKDEV(RAMDISK_MAJOR, 0), 1UL << MINORBITS);
-	unregister_blkdev(RAMDISK_MAJOR, "ramdisk");
+	blk_unregister_region(MKDEV(myramdisk_major, 0), 1UL << MINORBITS);
+	unregister_blkdev(myramdisk_major, "ramdisk");
 
 	pr_info("brd: module unloaded\n");
 }
