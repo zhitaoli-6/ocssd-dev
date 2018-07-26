@@ -28,6 +28,9 @@
 #include <linux/lightnvm.h>
 #include <linux/sched/sysctl.h>
 
+
+#include "common.h"
+
 static LIST_HEAD(nvm_tgt_types);
 static DECLARE_RWSEM(nvm_tgtt_lock);
 static LIST_HEAD(nvm_devices);
@@ -260,6 +263,7 @@ static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 		pr_err("nvm: target type %s not found\n", create->tgttype);
 		return -EINVAL;
 	}
+
 
 	mutex_lock(&dev->mlock);
 	t = nvm_find_target(dev, create->tgtname);
@@ -1137,9 +1141,24 @@ static int __nvm_configure_create(struct nvm_ioctl_create *create)
 {
 	struct nvm_dev *dev;
 	struct nvm_ioctl_create_simple *s;
+#define MAX_DEVICES_CNT 3
+	char *devname[MAX_DEVICES_CNT];
+	int devcnt, i;
+	devcnt = parse_by_delimiter(create->dev, ',', devname, MAX_DEVICES_CNT);
+	if(!devcnt){
+		pr_err("nvm: no devices given\n");
+		return -EINVAL;
+	}
+	pr_info("nvm: %d devices got", devcnt);
+	/*
+	pr_info("nvm: %d devices got: ", devcnt);
+	for(i = 0; i < devcnt; i++) 
+		pr_info("%s ", devname[i]);
+	pr_info("\n");
+	*/
 
 	down_write(&nvm_lock);
-	dev = nvm_find_nvm_dev(create->dev);
+	dev = nvm_find_nvm_dev(devname[0]);
 	up_write(&nvm_lock);
 
 	if (!dev) {
