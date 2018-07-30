@@ -359,6 +359,11 @@ err_reserve:
 	return ret;
 }
 
+static int nvm_create_ocssdr(struct nvm_dev **dev, struct nvm_ioctl_create *create){
+	pr_err("nvm: sorry, ocssdr is not supported now\n");
+	return -EINVAL;
+}
+
 static void __nvm_remove_target(struct nvm_target *t)
 {
 	struct nvm_tgt_type *tt = t->type;
@@ -1139,11 +1144,13 @@ EXPORT_SYMBOL(nvm_unregister);
 
 static int __nvm_configure_create(struct nvm_ioctl_create *create)
 {
-	struct nvm_dev *dev;
-	struct nvm_ioctl_create_simple *s;
 #define MAX_DEVICES_CNT 3
+	struct nvm_dev *dev[MAX_DEVICES_CNT];
+	struct nvm_ioctl_create_simple *s;
 	char *devname[MAX_DEVICES_CNT];
 	int devcnt, i;
+	int ret = 0;
+	/* create->devname will be changed by parse algorithm */
 	devcnt = parse_by_delimiter(create->dev, ',', devname, MAX_DEVICES_CNT);
 	if(!devcnt){
 		pr_err("nvm: no devices given\n");
@@ -1156,34 +1163,46 @@ static int __nvm_configure_create(struct nvm_ioctl_create *create)
 		pr_info("%s ", devname[i]);
 	pr_info("\n");
 	*/
+	for(i = 0; i < devcnt; i++){
+		down_write(&nvm_lock);
+		dev[i] = nvm_find_nvm_dev(devname[i]);
+		up_write(&nvm_lock);
 
-	down_write(&nvm_lock);
-	dev = nvm_find_nvm_dev(devname[0]);
-	up_write(&nvm_lock);
+		if (!dev[i]) {
+			pr_err("nvm: device %s not found\n", devname[i]);
+			return -EINVAL;
+		}
 
-	if (!dev) {
-		pr_err("nvm: device not found\n");
-		return -EINVAL;
+		if (create->conf.type != NVM_CONFIG_TYPE_SIMPLE) {
+			pr_err("nvm: config type not valid\n");
+			return -EINVAL;
+		}
+		s = &create->conf.s;
+
+		if (s->lun_begin == -1 && s->lun_end == -1) {
+			s->lun_begin = 0;
+			s->lun_end = dev[i]->geo.nr_luns - 1;
+		}
+
+		if (s->lun_begin > s->lun_end || s->lun_end >= dev[i]->geo.nr_luns) {
+			pr_err("nvm: lun out of bound (%u:%u > %u)\n",
+				s->lun_begin, s->lun_end, dev[i]->geo.nr_luns - 1);
+			return -EINVAL;
+		}
+
+		int tgtnamelen = strlen(create->tgtname);
+		if(i > 0) tgtnamelen--;
+		create->tgtname[tgtnamelen] = '0' + i;
+		create->tgtname[tgtnamelen + 1] = '\0';
+
+		ret = nvm_create_tgt(dev[i], create);
+		if(ret)
+			return ret;
 	}
-
-	if (create->conf.type != NVM_CONFIG_TYPE_SIMPLE) {
-		pr_err("nvm: config type not valid\n");
-		return -EINVAL;
+	if(devcnt > 1){
+		return nvm_create_ocssdr(dev, create);
 	}
-	s = &create->conf.s;
-
-	if (s->lun_begin == -1 && s->lun_end == -1) {
-		s->lun_begin = 0;
-		s->lun_end = dev->geo.nr_luns - 1;
-	}
-
-	if (s->lun_begin > s->lun_end || s->lun_end >= dev->geo.nr_luns) {
-		pr_err("nvm: lun out of bound (%u:%u > %u)\n",
-			s->lun_begin, s->lun_end, dev->geo.nr_luns - 1);
-		return -EINVAL;
-	}
-
-	return nvm_create_tgt(dev, create);
+	return ret;
 }
 
 static long nvm_ioctl_info(struct file *file, void __user *arg)
