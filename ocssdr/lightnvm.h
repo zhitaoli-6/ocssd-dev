@@ -23,6 +23,8 @@ enum {
 #define NVM_LUN_BITS (8)
 #define NVM_CH_BITS  (7)
 
+#define OCSSDR_MAX_DEVICES_CNT (3)
+
 struct ppa_addr {
 	/* Generic structure for all addresses */
 	union {
@@ -207,6 +209,13 @@ struct nvm_id {
 	struct nvm_addr_format ppaf;
 	struct nvm_id_group grp;
 } __packed;
+
+struct nvm_md_target{
+	struct list_head list;
+	struct nvm_tgt_type *type;
+	struct gendisk *disk;
+	struct nvm_target* child_targets[OCSSDR_MAX_DEVICES_CNT];
+};
 
 struct nvm_target {
 	struct list_head list;
@@ -441,6 +450,9 @@ typedef blk_qc_t (nvm_tgt_make_rq_fn)(struct request_queue *, struct bio *);
 typedef sector_t (nvm_tgt_capacity_fn)(void *);
 typedef void *(nvm_tgt_init_fn)(struct nvm_tgt_dev *, struct gendisk *,
 				int flags);
+// minit denotes to init a target made up of multiple child targets
+typedef void *(nvm_tgt_minit_fn)(int t_dev_cnt, struct nvm_target **, struct gendisk *,
+				int flags);
 typedef void (nvm_tgt_exit_fn)(void *);
 typedef int (nvm_tgt_sysfs_init_fn)(struct gendisk *);
 typedef void (nvm_tgt_sysfs_exit_fn)(struct gendisk *);
@@ -455,6 +467,7 @@ struct nvm_tgt_type {
 
 	/* module-specific init/teardown */
 	nvm_tgt_init_fn *init;
+	nvm_tgt_minit_fn *minit;
 	nvm_tgt_exit_fn *exit;
 
 	/* sysfs */

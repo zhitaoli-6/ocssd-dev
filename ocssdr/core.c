@@ -30,7 +30,6 @@
 
 
 #include "common.h"
-#define MAX_DEVICES_CNT 3
 
 static LIST_HEAD(nvm_tgt_types);
 static DECLARE_RWSEM(nvm_tgtt_lock);
@@ -58,8 +57,8 @@ struct nvm_area {
 	sector_t end;	/* end is excluded */
 };
 
-static struct nvm_target *ocssdr_find_target(const char *name, int lock){
-	struct nvm_target *tmp, *tgt= NULL;
+static struct nvm_md_target *ocssdr_find_target(const char *name, int lock){
+	struct nvm_md_target *tmp, *tgt= NULL;
 	
 	if (lock)
 		down_write(&ocssdr_lock);
@@ -386,7 +385,7 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 	struct request_queue *tqueue;
 	struct gendisk *tdisk;
 	struct nvm_tgt_type *tt;
-	struct nvm_target *t[MAX_DEVICES_CNT];
+	struct nvm_target ** t;
 	struct nvm_md_target *oc_t;
 	struct nvm_tgt_dev *tgt_dev;
 	struct nvm_dev* selected_dev;
@@ -408,7 +407,12 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 		return -EINVAL;
 	}
 	up_write(&ocssdr_lock);
-
+	oc_t = kmalloc(sizeof(struct nvm_md_target), GFP_KERNEL);
+	if(!t){
+		ret = -ENOMEM;
+		return ret;
+	}
+	t = oc_t->child_targets;
 	//  find sub pblk targets, expect they all exist
 	for(i = 0; i < devcnt; i++){
 		mutex_lock(&dev[i]->mlock);
@@ -424,7 +428,7 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 	tdisk = alloc_disk(0);
 	if (!tdisk) {
 		ret = -ENOMEM;
-		goto err_disk;
+		goto err_t;
 	}
 
 	// now, ocssdr queue is left on the same node of the first device queue
@@ -466,10 +470,9 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 
 	oc_t->type = tt;
 	oc_t->disk = tdisk;
-	oc_t->dev = NULL;
 
 	down_write(&ocssdr_lock);
-	list_add_tail(&t->list, &ocssdr_targets_list);
+	list_add_tail(&oc_t->list, &ocssdr_targets_list);
 	up_write(&ocssdr_lock);
 
 	__module_get(tt->owner);
@@ -484,7 +487,7 @@ err_init:
 err_disk:
 	put_disk(tdisk);
 err_t:
-	kfree(t);
+	kfree(oc_t);
 	return ret;
 }
 
@@ -1268,15 +1271,15 @@ EXPORT_SYMBOL(nvm_unregister);
 
 static int __nvm_configure_create(struct nvm_ioctl_create *create)
 {
-	struct nvm_dev *dev[MAX_DEVICES_CNT];
+	struct nvm_dev *dev[OCSSDR_MAX_DEVICES_CNT];
 	struct nvm_ioctl_create_simple *s;
-	char *devname[MAX_DEVICES_CNT];
-	char *tgtname[MAX_DEVICES_CNT];
+	char *devname[OCSSDR_MAX_DEVICES_CNT];
+	char *tgtname[OCSSDR_MAX_DEVICES_CNT];
 	int devcnt, i;
 	int len;
 	int ret = 0;
 	/* create->devname will be changed by parse algorithm */
-	devcnt = parse_by_delimiter(create->dev, ',', devname, MAX_DEVICES_CNT);
+	devcnt = parse_by_delimiter(create->dev, ',', devname, OCSSDR_MAX_DEVICES_CNT);
 	if(!devcnt){
 		pr_err("nvm: no devices given\n");
 		return -EINVAL;
