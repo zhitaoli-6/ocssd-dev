@@ -381,38 +381,38 @@ err_reserve:
 }
 
 static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], struct nvm_ioctl_create *create){
-	struct nvm_ioctl_create_simple *s = &create->conf.s;
 	struct request_queue *tqueue;
 	struct gendisk *tdisk;
 	struct nvm_tgt_type *tt;
 	struct nvm_target ** t;
 	struct nvm_md_target *oc_t;
-	struct nvm_tgt_dev *tgt_dev;
 	struct nvm_dev* selected_dev;
 	void *targetdata;
 	int ret, i;
+	pr_info("nvm: begin create ocssdr %s\n", create->tgtname);
 
 	tt = nvm_find_target_type(create->tgttype, 1);
 	if(!tt){
 		pr_err("nvm: target type %s not found\n", create->tgttype);
 		return -EINVAL;
 	}
+	pr_info("nvm: ocssdr find type\n");
 	
 	// find ocssdr target, expect it does not exist
-	down_write(&ocssdr_lock);
 	oc_t = ocssdr_find_target(create->tgtname, 1);
 	if(oc_t){
 		pr_err("nvm: ocssdr target name %s already exists.\n", create->tgtname);
 		up_write(&ocssdr_lock);
 		return -EINVAL;
 	}
-	up_write(&ocssdr_lock);
+	pr_info("nvm: no ocssdr target found\n");
 	oc_t = kmalloc(sizeof(struct nvm_md_target), GFP_KERNEL);
-	if(!t){
+	if(!oc_t){
 		ret = -ENOMEM;
 		return ret;
 	}
 	t = oc_t->child_targets;
+	pr_info("nvm: begin find ocssdr child target \n");
 	//  find sub pblk targets, expect they all exist
 	for(i = 0; i < devcnt; i++){
 		mutex_lock(&dev[i]->mlock);
@@ -425,6 +425,7 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 		mutex_unlock(&dev[i]->mlock);
 	}
 
+	pr_info("nvm: find  %d ocssdr child targets\n", devcnt);
 	tdisk = alloc_disk(0);
 	if (!tdisk) {
 		ret = -ENOMEM;
@@ -439,6 +440,7 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 		ret = -ENOMEM;
 		goto err_disk;
 	}
+	pr_info("nvm: target %s queue init pass\n", create->tgtname);
 	blk_queue_make_request(tqueue, tt->make_rq);
 
 	strlcpy(tdisk->disk_name, create->tgtname, sizeof(tdisk->disk_name));
@@ -450,6 +452,7 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 
 	targetdata = tt->minit(devcnt, t, tdisk, create->flags);
 	if (IS_ERR(targetdata)) {
+		pr_info("nvm: target type %s minit fn not supported\n", create->tgttype);
 		ret = PTR_ERR(targetdata);
 		goto err_init;
 	}
@@ -1288,12 +1291,13 @@ static int __nvm_configure_create(struct nvm_ioctl_create *create)
 	for(i = 0; i < devcnt; i++){
 		tgtname[i] = kmalloc(DISK_NAME_LEN, GFP_KERNEL);
 		if(!tgtname[i]){
-			while(i >= 0){
+			i--;
+			while(i >= 0 && tgtname[i]){
 				kfree(tgtname[i]);
 				i--;
 			}
+			return -ENOMEM;
 		}
-		return -ENOMEM;
 	}
 	/*
 	pr_info("nvm: %d devices got: ", devcnt);
@@ -1302,6 +1306,7 @@ static int __nvm_configure_create(struct nvm_ioctl_create *create)
 	pr_info("\n");
 	*/
 	for(i = 0; i < devcnt; i++){
+		pr_info("nvm: begin create %d-th tgt\n", i);
 		down_write(&nvm_lock);
 		dev[i] = nvm_find_nvm_dev(devname[i]);
 		up_write(&nvm_lock);
@@ -1330,17 +1335,23 @@ static int __nvm_configure_create(struct nvm_ioctl_create *create)
 		create->tgtname[len + 1] = '\0';
 		strncpy(tgtname[i], create->tgtname, len + 2);
 		ret = nvm_create_tgt(dev[i], create);
+		pr_info("nvm: create target %s ret %d\n", create->tgtname, ret);
 		if(ret)
-			return ret;
+			goto end;
 	}
 	if(devcnt > 1){
 		len = strlen(create->tgtname) - 1;
-		strncpy(create->tgtname + len, "-r", 2);
+		strncpy(create->tgtname + len, "_r", 2);
 		create->tgtname[len + 2] = '\0';
 
 		strcpy(create->tgttype, "ocssdr");
-		return nvm_create_ocssdr(devcnt, dev, tgtname, create);
+		ret = nvm_create_ocssdr(devcnt, dev, tgtname, create);
 	}
+
+end:
+	for(i = 0; i < devcnt; i++)
+		if(tgtname[i])
+			kfree(tgtname[i]);
 	return ret;
 }
 
