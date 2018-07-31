@@ -30,11 +30,15 @@
 
 
 #include "common.h"
+#define MAX_DEVICES_CNT 3
 
 static LIST_HEAD(nvm_tgt_types);
 static DECLARE_RWSEM(nvm_tgtt_lock);
 static LIST_HEAD(nvm_devices);
 static DECLARE_RWSEM(nvm_lock);
+static LIST_HEAD(ocssdr_targets_list);
+static DECLARE_RWSEM(ocssdr_lock);
+
 
 /* Map between virtual and physical channel and lun */
 struct nvm_ch_map {
@@ -53,6 +57,23 @@ struct nvm_area {
 	sector_t begin;
 	sector_t end;	/* end is excluded */
 };
+
+static struct nvm_target *ocssdr_find_target(const char *name, int lock){
+	struct nvm_target *tmp, *tgt= NULL;
+	
+	if (lock)
+		down_write(&ocssdr_lock);
+
+	list_for_each_entry(tmp, &ocssdr_targets_list, list){
+		if(!strcmp(name, tmp->disk->disk_name)){
+			tgt = tmp;
+			break;
+		}
+
+	if (lock)
+		up_write(&ocssdr_lock);
+	return tgt;
+}
 
 static struct nvm_target *nvm_find_target(struct nvm_dev *dev, const char *name)
 {
@@ -324,7 +345,7 @@ static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 
 	set_capacity(tdisk, tt->capacity(targetdata));
 	add_disk(tdisk);
-	pr_info("nvm: create target %s successfully\n", create->tgtname);
+	pr_info("nvm: create target %s PASS\n", create->tgtname);
 
 	if (tt->sysfs_init && tt->sysfs_init(tdisk)) {
 		ret = -ENOMEM;
@@ -359,9 +380,114 @@ err_reserve:
 	return ret;
 }
 
-static int nvm_create_ocssdr(struct nvm_dev **dev, struct nvm_ioctl_create *create){
-	pr_err("nvm: sorry, ocssdr is not supported now\n");
-	return -EINVAL;
+static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], struct nvm_ioctl_create *create){
+	struct nvm_ioctl_create_simple *s = &create->conf.s;
+	struct request_queue *tqueue;
+	struct gendisk *tdisk;
+	struct nvm_tgt_type *tt;
+	struct nvm_target *t[MAX_DEVICES_CNT];
+	struct nvm_target *oc_t;
+	struct nvm_tgt_dev *tgt_dev;
+	struct nvm_dev* selected_dev;
+	void *targetdata;
+	int ret, i;
+
+	tt = nvm_find_target_type(create->tgttype, 1);
+	if(!tt){
+		pr_err("nvm: target type %s not found\n", create->tgttype);
+		return -EINVAL;
+	}
+	
+	// find ocssdr target, expect it does not exist
+	mutex_lock(&ocssdr_lock);
+	oc_t =  ocssdr_find_target(create->tgtname);
+	if(oc_t){
+		pr_err("nvm: ocssdr target name %s already exists.\n", create->tgtname);
+		mutex_unlock(&ocssdr_lock);
+		return -EINVAL;
+	}
+	mutex_unlock(&ocssdr_lock);
+
+	//  find sub pblk targets, expect they all exist
+	for(i = 0; i < devcnt, i++){
+		mutex_lock(&dev[i]->mlock);
+		t[i] = nvm_find_target(dev[i], tgtname[i]);
+		if(!t[i]){
+			mutex_unlock(&dev[i]->mlock);
+			pr_err("nvm: ocssdr sub-target name %s does not exists.\n", tgtname[i]);
+			return -EINVAL;
+		}
+		mutex_unlock(&dev[i]->mlock);
+	}
+
+	t = kmalloc(sizeof(struct nvm_target), GFP_KERNEL);
+	if (!t) {
+		return -ENOMEM;
+	}
+
+	tdisk = alloc_disk(0);
+	if (!tdisk) {
+		ret = -ENOMEM;
+		goto err_dev;
+	}
+
+	// now, ocssdr queue is left on the same node of the first device queue
+	// to do: make sure it is right
+	selected_dev = dev[0];
+	tqueue = blk_alloc_queue_node(GFP_KERNEL, selected_dev->q->node);
+	if (!tqueue) {
+		ret = -ENOMEM;
+		goto err_disk;
+	}
+	blk_queue_make_request(tqueue, tt->make_rq);
+
+	strlcpy(tdisk->disk_name, create->tgtname, sizeof(tdisk->disk_name));
+	tdisk->flags = GENHD_FL_EXT_DEVT;
+	tdisk->major = 0;
+	tdisk->first_minor = 0;
+	tdisk->fops = &nvm_fops;
+	tdisk->queue = tqueue;
+
+	targetdata = tt->minit(devcnt, t, tdisk, create->flags);
+	if (IS_ERR(targetdata)) {
+		ret = PTR_ERR(targetdata);
+		goto err_init;
+	}
+
+	tdisk->private_data = targetdata;
+	tqueue->queuedata = targetdata;
+
+	blk_queue_max_hw_sectors(tqueue, 8 * selected_dev->ops->max_phys_sect);
+
+	set_capacity(tdisk, tt->capacity(targetdata));
+	add_disk(tdisk);
+	pr_info("nvm: create ocssdr target %s PASS\n", create->tgtname);
+
+	if (tt->sysfs_init && tt->sysfs_init(tdisk)) {
+		ret = -ENOMEM;
+		goto err_sysfs;
+	}
+
+	t->type = tt;
+	t->disk = tdisk;
+	t->dev = NULL;
+
+	list_add_tail(&t->list, &ocssdr_targets_list);
+
+	__module_get(tt->owner);
+
+	return 0;
+err_sysfs:
+	if (tt->exit)
+		tt->exit(targetdata);
+err_init:
+	blk_cleanup_queue(tqueue);
+	tdisk->queue = NULL;
+err_disk:
+	put_disk(tdisk);
+err_t:
+	kfree(t);
+	return ret;
 }
 
 static void __nvm_remove_target(struct nvm_target *t)
@@ -1144,11 +1270,12 @@ EXPORT_SYMBOL(nvm_unregister);
 
 static int __nvm_configure_create(struct nvm_ioctl_create *create)
 {
-#define MAX_DEVICES_CNT 3
 	struct nvm_dev *dev[MAX_DEVICES_CNT];
 	struct nvm_ioctl_create_simple *s;
 	char *devname[MAX_DEVICES_CNT];
+	char *tgtname[MAX_DEVICES_CNT];
 	int devcnt, i;
+	int len;
 	int ret = 0;
 	/* create->devname will be changed by parse algorithm */
 	devcnt = parse_by_delimiter(create->dev, ',', devname, MAX_DEVICES_CNT);
@@ -1157,6 +1284,16 @@ static int __nvm_configure_create(struct nvm_ioctl_create *create)
 		return -EINVAL;
 	}
 	pr_info("nvm: %d devices got", devcnt);
+	for(i = 0; i < devcnt; i++){
+		tgtname[i] = kmalloc(DISK_NAME_LEN, GFP_KERNEL);
+		if(!tgtname[i]){
+			while(i >= 0){
+				kfree(tgtname[i]);
+				i--;
+			}
+		}
+		return -ENOMEM;
+	}
 	/*
 	pr_info("nvm: %d devices got: ", devcnt);
 	for(i = 0; i < devcnt; i++) 
@@ -1167,40 +1304,41 @@ static int __nvm_configure_create(struct nvm_ioctl_create *create)
 		down_write(&nvm_lock);
 		dev[i] = nvm_find_nvm_dev(devname[i]);
 		up_write(&nvm_lock);
-
 		if (!dev[i]) {
 			pr_err("nvm: device %s not found\n", devname[i]);
 			return -EINVAL;
 		}
-
 		if (create->conf.type != NVM_CONFIG_TYPE_SIMPLE) {
 			pr_err("nvm: config type not valid\n");
 			return -EINVAL;
 		}
 		s = &create->conf.s;
-
 		if (s->lun_begin == -1 && s->lun_end == -1) {
 			s->lun_begin = 0;
 			s->lun_end = dev[i]->geo.nr_luns - 1;
 		}
-
 		if (s->lun_begin > s->lun_end || s->lun_end >= dev[i]->geo.nr_luns) {
 			pr_err("nvm: lun out of bound (%u:%u > %u)\n",
 				s->lun_begin, s->lun_end, dev[i]->geo.nr_luns - 1);
 			return -EINVAL;
 		}
 
-		int tgtnamelen = strlen(create->tgtname);
-		if(i > 0) tgtnamelen--;
-		create->tgtname[tgtnamelen] = '0' + i;
-		create->tgtname[tgtnamelen + 1] = '\0';
-
+		len = strlen(create->tgtname);
+		if(i > 0) len--;
+		create->tgtname[len] = '0' + i;
+		create->tgtname[len + 1] = '\0';
+		strncpy(tgtname[i], create->tgtname, len + 2);
 		ret = nvm_create_tgt(dev[i], create);
 		if(ret)
 			return ret;
 	}
 	if(devcnt > 1){
-		return nvm_create_ocssdr(dev, create);
+		len = strlen(create->tgtname) - 1;
+		strncpy(create->tgtname + len, "-r", 2);
+		create->tgtname[len + 2] = '\0';
+
+		strcpy(create->tgttype, "ocssdr");
+		return nvm_create_ocssdr(devcnt, dev, tgtname, create);
 	}
 	return ret;
 }
