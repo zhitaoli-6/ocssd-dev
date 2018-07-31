@@ -69,6 +69,7 @@ static struct nvm_target *ocssdr_find_target(const char *name, int lock){
 			tgt = tmp;
 			break;
 		}
+	}
 
 	if (lock)
 		up_write(&ocssdr_lock);
@@ -315,13 +316,13 @@ static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 	tdisk = alloc_disk(0);
 	if (!tdisk) {
 		ret = -ENOMEM;
-		goto err_dev;
+		goto err_disk;
 	}
 
 	tqueue = blk_alloc_queue_node(GFP_KERNEL, dev->q->node);
 	if (!tqueue) {
 		ret = -ENOMEM;
-		goto err_disk;
+		goto err_dev;
 	}
 	blk_queue_make_request(tqueue, tt->make_rq);
 
@@ -386,7 +387,7 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 	struct gendisk *tdisk;
 	struct nvm_tgt_type *tt;
 	struct nvm_target *t[MAX_DEVICES_CNT];
-	struct nvm_target *oc_t;
+	struct nvm_md_target *oc_t;
 	struct nvm_tgt_dev *tgt_dev;
 	struct nvm_dev* selected_dev;
 	void *targetdata;
@@ -399,17 +400,17 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 	}
 	
 	// find ocssdr target, expect it does not exist
-	mutex_lock(&ocssdr_lock);
-	oc_t =  ocssdr_find_target(create->tgtname);
+	down_write(&ocssdr_lock);
+	oc_t = ocssdr_find_target(create->tgtname, 1);
 	if(oc_t){
 		pr_err("nvm: ocssdr target name %s already exists.\n", create->tgtname);
-		mutex_unlock(&ocssdr_lock);
+		up_write(&ocssdr_lock);
 		return -EINVAL;
 	}
-	mutex_unlock(&ocssdr_lock);
+	up_write(&ocssdr_lock);
 
 	//  find sub pblk targets, expect they all exist
-	for(i = 0; i < devcnt, i++){
+	for(i = 0; i < devcnt; i++){
 		mutex_lock(&dev[i]->mlock);
 		t[i] = nvm_find_target(dev[i], tgtname[i]);
 		if(!t[i]){
@@ -420,15 +421,10 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 		mutex_unlock(&dev[i]->mlock);
 	}
 
-	t = kmalloc(sizeof(struct nvm_target), GFP_KERNEL);
-	if (!t) {
-		return -ENOMEM;
-	}
-
 	tdisk = alloc_disk(0);
 	if (!tdisk) {
 		ret = -ENOMEM;
-		goto err_dev;
+		goto err_disk;
 	}
 
 	// now, ocssdr queue is left on the same node of the first device queue
@@ -468,11 +464,13 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 		goto err_sysfs;
 	}
 
-	t->type = tt;
-	t->disk = tdisk;
-	t->dev = NULL;
+	oc_t->type = tt;
+	oc_t->disk = tdisk;
+	oc_t->dev = NULL;
 
+	down_write(&ocssdr_lock);
 	list_add_tail(&t->list, &ocssdr_targets_list);
+	up_write(&ocssdr_lock);
 
 	__module_get(tt->owner);
 
