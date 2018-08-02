@@ -210,18 +210,18 @@ struct nvm_id {
 	struct nvm_id_group grp;
 } __packed;
 
-struct nvm_md_target{
-	struct list_head list;
-	struct nvm_tgt_type *type;
-	struct gendisk *disk;
-	struct nvm_target* child_targets[OCSSDR_MAX_DEVICES_CNT];
-};
-
 struct nvm_target {
 	struct list_head list;
 	struct nvm_tgt_dev *dev;
 	struct nvm_tgt_type *type;
 	struct gendisk *disk;
+};
+
+struct nvm_md_target{
+	struct list_head list;
+	struct nvm_tgt_type *type;
+	struct gendisk *disk;
+	struct nvm_target* child_targets[OCSSDR_MAX_DEVICES_CNT];
 };
 
 #define ADDR_EMPTY (~0ULL)

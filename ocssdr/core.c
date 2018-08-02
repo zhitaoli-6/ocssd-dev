@@ -406,7 +406,7 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 		return -EINVAL;
 	}
 	pr_info("nvm: no ocssdr target found\n");
-	oc_t = kmalloc(sizeof(struct nvm_md_target), GFP_KERNEL);
+	oc_t = kzalloc(sizeof(struct nvm_md_target), GFP_KERNEL);
 	if(!oc_t){
 		ret = -ENOMEM;
 		return ret;
@@ -434,6 +434,7 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 
 	// now, ocssdr queue is left on the same node of the first device queue
 	// to do: make sure it is right
+	// blk_alloc_queue may fit here
 	selected_dev = dev[0];
 	tqueue = blk_alloc_queue_node(GFP_KERNEL, selected_dev->q->node);
 	if (!tqueue) {
@@ -542,6 +543,65 @@ static int nvm_remove_tgt(struct nvm_dev *dev, struct nvm_ioctl_remove *remove)
 
 	return 0;
 }
+
+static int __nvm_remove_mdt(struct nvm_md_target *t){
+	struct nvm_tgt_type *tt = t->type;
+	struct gendisk *tdisk = t->disk;
+	struct request_queue *q = tdisk->queue;
+
+	del_gendisk(tdisk);
+	blk_cleanup_queue(q);
+
+	if (tt->sysfs_exit)
+		tt->sysfs_exit(tdisk);
+
+	if (tt->exit)
+		tt->exit(tdisk->private_data);
+
+	put_disk(tdisk);
+	module_put(t->type->owner);
+
+	list_del(&t->list);
+	kfree(t);
+	return 0;
+}
+
+static int nvm_remove_md_tgt(struct nvm_ioctl_remove *remove){
+	struct nvm_md_target* tmp;
+	struct nvm_target *child_target;
+	struct nvm_dev *child_dev;
+	int ret = 1;
+	int i;
+	
+	pr_info("nvm: begin to find ocssdr target %s\n", remove->tgtname);
+	down_write(&ocssdr_lock);
+	list_for_each_entry(tmp, &ocssdr_targets_list, list){
+		if(!strcmp(remove->tgtname, tmp->disk->disk_name)){
+			pr_info("nvm: found ocssdr target %s\n", remove->tgtname);
+			for(i = 0; i < OCSSDR_MAX_DEVICES_CNT; i++){
+				child_target = tmp->child_targets[i];
+				if(!child_target)
+					break;
+				pr_info("nvm: begin remove ocssdr child target %s\n", child_target->disk->disk_name);
+				child_dev = child_target->dev->parent;
+				strcpy(remove->tgtname, child_target->disk->disk_name);
+				ret = nvm_remove_tgt(child_dev, remove);
+				if(ret){
+					pr_info("nvm: corrupted ocssdr child target %s\n", child_target->disk->disk_name);
+					up_write(&ocssdr_lock);
+					return ret;
+				}
+			}
+			pr_info("nvm: remove total %d ocssdr child targets\n", i);
+			ret = __nvm_remove_mdt(tmp);
+			//list_del(&tmp->list);
+			break;
+		}
+	}
+	up_write(&ocssdr_lock);
+	return ret;
+}
+
 
 static int nvm_register_map(struct nvm_dev *dev)
 {
@@ -1495,6 +1555,8 @@ static long nvm_ioctl_dev_remove(struct file *file, void __user *arg)
 		if (!ret)
 			break;
 	}
+	
+	ret = nvm_remove_md_tgt(&remove);
 
 	return ret;
 }

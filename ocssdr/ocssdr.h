@@ -11,4 +11,11 @@
 
 #include <linux/lightnvm.h>
 
+
+struct ocssdr {
+	struct gendisk *disk;
+	struct nvm_target **child_targets;
+	int child_target_cnt;
+};
+
 #endif

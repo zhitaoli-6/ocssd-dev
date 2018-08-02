@@ -9,23 +9,50 @@ struct bio_set *ocssdr_bio_set;
 
 static blk_qc_t ocssdr_make_rq(struct request_queue *q, struct bio *bio)
 {
+	struct ocssdr *ocssdr = q->queuedata;
+
+	// 
+	bio->bi_disk = ocssdr->child_targets[0]->disk;
+	//bio->bi_partno = 0;
+	generic_make_request(bio);
+
 	return BLK_QC_T_NONE;
 }
 
 
-static void ocssdr_exit(void *private)
-{
+static void ocssdr_exit(void *private){
+	struct ocssdr *ocssdr = private;
+	kfree(ocssdr);
 }
 
 static sector_t ocssdr_capacity(void *private)
 {
-	return 0;
+	struct ocssdr *ocssdr = private;
+	struct nvm_target **t = ocssdr->child_targets;
+	sector_t total = 0;
+	int i;
+	for(i = 0; i < ocssdr->child_target_cnt; i++){
+		total += get_capacity(t[i]->disk);
+	}
+	return get_capacity(t[0]->disk);
 }
 
-static void *ocssdr_init(int subdevcnt, struct nvm_target **sub_targets, struct gendisk *tdisk,
+static void *ocssdr_init(int subdevcnt, struct nvm_target **child_targets, struct gendisk *tdisk,
 		int flags)
 {
-	return ERR_PTR(-EINVAL);
+	//struct nvm_target ** t;
+	struct ocssdr *ocssdr;
+	//int ret;
+	ocssdr = kzalloc(sizeof(struct ocssdr), GFP_KERNEL);
+	if(!ocssdr){
+		return ERR_PTR(-ENOMEM);
+	}
+	ocssdr->disk = tdisk;
+	ocssdr->child_targets = child_targets;
+	ocssdr->child_target_cnt = subdevcnt;
+	return ocssdr;
+
+	//return ERR_PTR(-EINVAL);
 }
 
 /* physical block device target */
