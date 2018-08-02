@@ -30,8 +30,11 @@ static int hardsect_size = 512;
 module_param(hardsect_size, int, 0);
 static int nsectors = 1024*128;	/* How big the drive is */
 module_param(nsectors, int, 0);
-static int ndevices = 1;
+static int ndevices = 2;
 module_param(ndevices, int, 0);
+
+static int RAID0 = 0;
+module_param(RAID0, int, 0);
 
 /*
  * The different "request modes" we can use.
@@ -41,7 +44,7 @@ enum {
 	RM_FULL    = 1,	/* The full-blown version */
 	RM_NOQUEUE = 2,	/* Use make_request */
 };
-static int request_mode = RM_FULL;
+static int request_mode = RM_NOQUEUE;
 module_param(request_mode, int, 0);
 
 /*
@@ -76,7 +79,15 @@ struct sbull_dev {
         //struct timer_list timer;        /* For simulated media changes */
 };
 
+struct md_sbull_dev {
+	struct request_queue *queue;    /* The device request queue */
+	struct gendisk *gd;
+	struct sbull_dev* child_dev[2];
+	spinlock_t lock;                /* For mutual exclusion */
+};
+
 static struct sbull_dev *Devices = NULL;
+static struct md_sbull_dev *md_dev= NULL;
 
 /*
  * Handle an I/O request.
@@ -187,9 +198,25 @@ static blk_qc_t sbull_make_request(struct request_queue *q, struct bio *bio)
 {
 	struct sbull_dev *dev = bio->bi_disk->private_data;
 	int status;
+	printk(KERN_NOTICE "sbull: %s: op %s, size %u, partno %u\n", __func__, (bio_data_dir(bio) == WRITE?"write":"read"), bio_sectors(bio), bio->bi_partno);
 
 	status = sbull_xfer_bio(dev, bio);
 	bio_endio(bio);
+	return BLK_QC_T_NONE;
+}
+
+static blk_qc_t md_sbull_make_request(struct request_queue *q, struct bio *bio)
+{
+	struct md_sbull_dev *dev = bio->bi_disk->private_data;
+	printk(KERN_NOTICE "RAID0 begins working\n");
+	bio->bi_disk =  dev->child_dev[0]->gd;
+	generic_make_request(bio);
+	/*
+	int status;
+
+	status = sbull_xfer_bio(dev, bio);
+	bio_endio(bio);
+	*/
 	return BLK_QC_T_NONE;
 }
 
@@ -374,13 +401,13 @@ static void setup_device(struct sbull_dev *dev, int which)
 	 * And the gendisk structure.
 	 */
 	dev->gd = alloc_disk(SBULL_MINORS);
-	if (! dev->gd) {
+	if (!dev->gd) {
 		printk (KERN_NOTICE "alloc_disk failure\n");
 		goto out_vfree;
 	}
 	dev->gd->major = sbull_major;
 	dev->gd->first_minor = which*SBULL_MINORS;
-	dev->gd->fops = &sbull_ops;
+	dev->gd->fops = NULL;
 	dev->gd->queue = dev->queue;
 	dev->gd->private_data = dev;
 	snprintf (dev->gd->disk_name, 32, "sbull%c", which + 'a');
@@ -391,6 +418,48 @@ static void setup_device(struct sbull_dev *dev, int which)
   out_vfree:
 	if (dev->data)
 		vfree(dev->data);
+}
+
+
+static void setup_md_device(struct sbull_dev *child_devs, int devcnt)
+{
+	struct md_sbull_dev *dev;
+	int i;
+	md_dev = kzalloc(sizeof(struct md_sbull_dev), GFP_KERNEL);
+	if (md_dev == NULL) {
+		printk (KERN_NOTICE "vmalloc failure.\n");
+		return;
+	}
+	dev = md_dev;
+	spin_lock_init(&dev->lock);
+
+	dev->queue = blk_alloc_queue(GFP_KERNEL);
+	if(!dev->queue){
+		return;
+	}
+	blk_queue_make_request(dev->queue, md_sbull_make_request);
+
+	blk_queue_logical_block_size(dev->queue, hardsect_size);
+	dev->queue->queuedata = dev;
+	dev->gd = alloc_disk(SBULL_MINORS);
+	if (! dev->gd) {
+		printk (KERN_NOTICE "alloc_disk failure\n");
+		//blk_cleanup_queue(dev->queue);
+		//kfree(dev);
+		return;
+	}
+	dev->gd->major = sbull_major;
+	dev->gd->first_minor = 3*SBULL_MINORS;
+	dev->gd->fops = &sbull_ops;
+	dev->gd->queue = dev->queue;
+	dev->gd->private_data = dev;
+	strcpy(dev->gd->disk_name, "sbull_raid0");
+	for(i=0; i < devcnt; i++)
+		dev->child_dev[i] = &child_devs[i];
+	//snprintf (dev->gd->disk_name, 32, "sbull%c", which + 'a');
+	set_capacity(dev->gd, nsectors*(hardsect_size/KERNEL_SECTOR_SIZE));
+	add_disk(dev->gd);
+	printk(KERN_NOTICE "setup md RAID0 PASS\n");
 }
 
 
@@ -414,37 +483,59 @@ static int __init sbull_init(void)
 		goto out_unregister;
 	for (i = 0; i < ndevices; i++) 
 		setup_device(Devices + i, i);
+	
+	if(RAID0){
+		if(ndevices != 2){
+			printk(KERN_NOTICE "sbull: wrong RAID0 configuration\n");
+			unregister_blkdev(sbull_major, "sbull");
+			return -EINVAL;
+		}
+		setup_md_device(Devices, ndevices);
+	}
     
 	return 0;
 
   out_unregister:
-	unregister_blkdev(sbull_major, "sbd");
+	unregister_blkdev(sbull_major, "sbull");
 	return -ENOMEM;
 }
 
 static void sbull_exit(void)
-{
+{	
 	int i;
-
-	for (i = 0; i < ndevices; i++) {
-		struct sbull_dev *dev = Devices + i;
-
-		//del_timer_sync(&dev->timer);
-		if (dev->gd) {
-			del_gendisk(dev->gd);
-			put_disk(dev->gd);
+	if(RAID0){
+		if(md_dev->gd){
+			del_gendisk(md_dev->gd);
+			put_disk(md_dev->gd);
 		}
-		if (dev->queue) {
-			if (request_mode == RM_NOQUEUE)
-				kobject_put (&dev->queue->kobj);
-			else
-				blk_cleanup_queue(dev->queue);
+		if(md_dev->queue){
+			blk_cleanup_queue(md_dev->queue);
 		}
-		if (dev->data)
-			vfree(dev->data);
+		if(md_dev) kfree(md_dev);
+	}
+
+	if(Devices){
+		for (i = 0; i < ndevices; i++) {
+			struct sbull_dev *dev = Devices + i;
+
+			//del_timer_sync(&dev->timer);
+			if (dev->gd) {
+				del_gendisk(dev->gd);
+				put_disk(dev->gd);
+			}
+			if (dev->queue) {
+				if (request_mode == RM_NOQUEUE)
+					kobject_put (&dev->queue->kobj);
+				else
+					blk_cleanup_queue(dev->queue);
+			}
+			if (dev->data)
+				vfree(dev->data);
+		}
+
+		kfree(Devices);
 	}
 	unregister_blkdev(sbull_major, "sbull");
-	kfree(Devices);
 }
 	
 module_init(sbull_init);
