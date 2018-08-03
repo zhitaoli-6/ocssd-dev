@@ -33,8 +33,14 @@ module_param(nsectors, int, 0);
 static int ndevices = 2;
 module_param(ndevices, int, 0);
 
-static int RAID0 = 0;
+static int RAID0 = 1;
 module_param(RAID0, int, 0);
+
+static int CHUNK_SECTS = 8; // 8 sectors per chunk
+
+
+static struct bio_set *sbull_bio_set = NULL;
+
 
 /*
  * The different "request modes" we can use.
@@ -205,18 +211,30 @@ static blk_qc_t sbull_make_request(struct request_queue *q, struct bio *bio)
 	return BLK_QC_T_NONE;
 }
 
+static int get_target(int sector){
+	return (sector >> 3) & 1;
+}
+
 static blk_qc_t md_sbull_make_request(struct request_queue *q, struct bio *bio)
 {
 	struct md_sbull_dev *dev = bio->bi_disk->private_data;
-	printk(KERN_NOTICE "RAID0 begins working\n");
-	bio->bi_disk =  dev->child_dev[0]->gd;
-	generic_make_request(bio);
-	/*
-	int status;
+	//printk(KERN_NOTICE "RAID0 begins working\n");
+	//printk(KERN_NOTICE "sbull: %s: op %s, size %u, partno %u\n", __func__, (bio_data_dir(bio) == WRITE?"write":"read"), bio_sectors(bio), bio->bi_partno);
 
-	status = sbull_xfer_bio(dev, bio);
-	bio_endio(bio);
-	*/
+	int total_sectors = bio_sectors(bio);
+	int bi_sector = bio->bi_iter.bi_sector;
+	int sectors = CHUNK_SECTS - ( bi_sector & (CHUNK_SECTS - 1));
+	int target;
+	if(sectors < total_sectors){
+		struct bio *split = bio_split(bio, sectors, GFP_NOIO, sbull_bio_set);
+		bio_chain(split, bio);
+		generic_make_request(bio);
+		bio = split;
+	}
+	target = get_target(bi_sector);
+	bio->bi_disk =  dev->child_dev[target]->gd;
+	bio->bi_iter.bi_sector = ((bi_sector >> 4)  << 3) + (bi_sector & (CHUNK_SECTS - 1));
+	generic_make_request(bio);
 	return BLK_QC_T_NONE;
 }
 
@@ -340,6 +358,10 @@ static struct block_device_operations sbull_ops = {
 	.ioctl	         = sbull_ioctl
 };
 
+static struct block_device_operations md_sbull_ops = {
+	.owner           = THIS_MODULE,
+};
+
 
 /*
  * Set up our internal device.
@@ -407,7 +429,7 @@ static void setup_device(struct sbull_dev *dev, int which)
 	}
 	dev->gd->major = sbull_major;
 	dev->gd->first_minor = which*SBULL_MINORS;
-	dev->gd->fops = NULL;
+	dev->gd->fops = &sbull_ops;
 	dev->gd->queue = dev->queue;
 	dev->gd->private_data = dev;
 	snprintf (dev->gd->disk_name, 32, "sbull%c", which + 'a');
@@ -450,14 +472,15 @@ static void setup_md_device(struct sbull_dev *child_devs, int devcnt)
 	}
 	dev->gd->major = sbull_major;
 	dev->gd->first_minor = 3*SBULL_MINORS;
-	dev->gd->fops = &sbull_ops;
+	dev->gd->fops = &md_sbull_ops;
 	dev->gd->queue = dev->queue;
 	dev->gd->private_data = dev;
 	strcpy(dev->gd->disk_name, "sbull_raid0");
 	for(i=0; i < devcnt; i++)
 		dev->child_dev[i] = &child_devs[i];
 	//snprintf (dev->gd->disk_name, 32, "sbull%c", which + 'a');
-	set_capacity(dev->gd, nsectors*(hardsect_size/KERNEL_SECTOR_SIZE));
+	set_capacity(dev->gd, devcnt * nsectors*(hardsect_size/KERNEL_SECTOR_SIZE));
+	//set_capacity(dev->gd, devcnt * nsectors*(hardsect_size/KERNEL_SECTOR_SIZE));
 	add_disk(dev->gd);
 	printk(KERN_NOTICE "setup md RAID0 PASS\n");
 }
@@ -492,6 +515,7 @@ static int __init sbull_init(void)
 		}
 		setup_md_device(Devices, ndevices);
 	}
+	sbull_bio_set = bioset_create(BIO_POOL_SIZE, 0, 0);
     
 	return 0;
 
@@ -535,6 +559,7 @@ static void sbull_exit(void)
 
 		kfree(Devices);
 	}
+	if(sbull_bio_set) bioset_free(sbull_bio_set);
 	unregister_blkdev(sbull_major, "sbull");
 }
 	
