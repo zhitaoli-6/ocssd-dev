@@ -386,7 +386,6 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 	struct nvm_tgt_type *tt;
 	struct nvm_target ** t;
 	struct nvm_md_target *oc_t;
-	struct nvm_dev* selected_dev;
 	void *targetdata;
 	int ret, i;
 	pr_info("nvm: begin create ocssdr %s\n", create->tgtname);
@@ -402,7 +401,6 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 	oc_t = ocssdr_find_target(create->tgtname, 1);
 	if(oc_t){
 		pr_err("nvm: ocssdr target name %s already exists.\n", create->tgtname);
-		up_write(&ocssdr_lock);
 		return -EINVAL;
 	}
 	pr_info("nvm: no ocssdr target found\n");
@@ -412,14 +410,14 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 		return ret;
 	}
 	t = oc_t->child_targets;
-	pr_info("nvm: begin find ocssdr child target \n");
+	pr_info("nvm: begin to find ocssdr child target \n");
 	//  find sub pblk targets, expect they all exist
 	for(i = 0; i < devcnt; i++){
 		mutex_lock(&dev[i]->mlock);
 		t[i] = nvm_find_target(dev[i], tgtname[i]);
 		if(!t[i]){
 			mutex_unlock(&dev[i]->mlock);
-			pr_err("nvm: ocssdr sub-target name %s does not exists.\n", tgtname[i]);
+			pr_err("nvm: ocssdr sub-target name %s does not exist.\n", tgtname[i]);
 			return -EINVAL;
 		}
 		mutex_unlock(&dev[i]->mlock);
@@ -432,11 +430,8 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 		goto err_t;
 	}
 
-	// now, ocssdr queue is left on the same node of the first device queue
-	// to do: make sure it is right
-	// blk_alloc_queue may fit here
-	selected_dev = dev[0];
-	tqueue = blk_alloc_queue_node(GFP_KERNEL, selected_dev->q->node);
+	tqueue = blk_alloc_queue(GFP_KERNEL);
+	//tqueue = blk_alloc_queue_node(GFP_KERNEL, selected_dev->q->node);
 	if (!tqueue) {
 		ret = -ENOMEM;
 		goto err_disk;
@@ -445,8 +440,7 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 	blk_queue_make_request(tqueue, tt->make_rq);
 
 	strlcpy(tdisk->disk_name, create->tgtname, sizeof(tdisk->disk_name));
-	tdisk->flags = GENHD_FL_EXT_DEVT;
-	tdisk->major = 0;
+	tdisk->flags = GENHD_FL_EXT_DEVT; tdisk->major = 0;
 	tdisk->first_minor = 0;
 	tdisk->fops = &nvm_fops;
 	tdisk->queue = tqueue;
@@ -461,7 +455,7 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 	tdisk->private_data = targetdata;
 	tqueue->queuedata = targetdata;
 
-	blk_queue_max_hw_sectors(tqueue, 8 * selected_dev->ops->max_phys_sect);
+	//blk_queue_max_hw_sectors(tqueue, 8 * selected_dev->ops->max_phys_sect);
 
 	set_capacity(tdisk, tt->capacity(targetdata));
 	add_disk(tdisk);
@@ -1400,9 +1394,10 @@ static int __nvm_configure_create(struct nvm_ioctl_create *create)
 			goto end;
 	}
 	if(devcnt > 1){
-		len = strlen(create->tgtname) - 1;
-		strncpy(create->tgtname + len, "_r", 2);
-		create->tgtname[len + 2] = '\0';
+		len = strlen(create->tgtname);
+		create->tgtname[len-1] = 'r';
+		for(i = 0; i < len; i++)
+			create->tgtname[i] -= 'a' - 'A';
 
 		strcpy(create->tgttype, "ocssdr");
 		ret = nvm_create_ocssdr(devcnt, dev, tgtname, create);
@@ -1551,12 +1546,14 @@ static long nvm_ioctl_dev_remove(struct file *file, void __user *arg)
 	}
 
 	list_for_each_entry(dev, &nvm_devices, devices) {
+		//pr_info("nvm: remove target %s, try dev %s", remove->tgtname, dev->name);
 		ret = nvm_remove_tgt(dev, &remove);
 		if (!ret)
 			break;
 	}
 	
-	ret = nvm_remove_md_tgt(&remove);
+	if(ret) 
+		ret = nvm_remove_md_tgt(&remove);
 
 	return ret;
 }

@@ -55,6 +55,9 @@ static int pblk_rw_io(struct request_queue *q, struct pblk *pblk,
 static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
 {
 	struct pblk *pblk = q->queuedata;
+	pr_info("nvm: %s: op %u, bi_sector %8lu, size %8u, partno %u\n", 
+			pblk->disk->disk_name, bio_op(bio), bio->bi_iter.bi_sector, 
+			bio_sectors(bio), bio->bi_partno);
 
 	if (bio_op(bio) == REQ_OP_DISCARD) {
 		pblk_discard(pblk, bio);

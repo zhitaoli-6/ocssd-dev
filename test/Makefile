@@ -1,10 +1,11 @@
 
 GCC = gcc
+G++ = g++
 
 default:blk-test 
 
-blk-test: ram-disk-test.c
-	$(GCC) $(CFLAGS) $< -o $@ $(LFLAGS) 
+blk-test: blk-test.cpp
+	$(G++) $(CFLAGS) $< -o $@ $(LFLAGS) 
 
 .PHONY: clean
 

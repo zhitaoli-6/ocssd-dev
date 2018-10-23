@@ -36,7 +36,9 @@ module_param(ndevices, int, 0);
 static int RAID0 = 1;
 module_param(RAID0, int, 0);
 
-static int CHUNK_SECTS = 8; // 8 sectors per chunk
+#define CHUNK_BITS (3)
+#define CHUNK_SECTS (1<<CHUNK_BITS)
+//static int CHUNK_SECTS = 8; // 8 sectors per chunk
 
 
 static struct bio_set *sbull_bio_set = NULL;
@@ -83,6 +85,7 @@ struct sbull_dev {
         struct request_queue *queue;    /* The device request queue */
         struct gendisk *gd;             /* The gendisk structure */
         //struct timer_list timer;        /* For simulated media changes */
+		//custom
 };
 
 struct md_sbull_dev {
@@ -204,27 +207,31 @@ static blk_qc_t sbull_make_request(struct request_queue *q, struct bio *bio)
 {
 	struct sbull_dev *dev = bio->bi_disk->private_data;
 	int status;
-	printk(KERN_NOTICE "sbull: %s: op %s, size %u, partno %u\n", __func__, (bio_data_dir(bio) == WRITE?"write":"read"), bio_sectors(bio), bio->bi_partno);
+	printk(KERN_NOTICE "sbull: %s: op %s, lba %10lu, size %10u, partno %u\n", bio->bi_disk->disk_name, (bio_data_dir(bio) == WRITE?"write":"read"), bio->bi_iter.bi_sector, bio_sectors(bio), bio->bi_partno);
 
 	status = sbull_xfer_bio(dev, bio);
 	bio_endio(bio);
 	return BLK_QC_T_NONE;
 }
 
+#ifdef MACRO_RAID0
 static int get_target(int sector){
 	return (sector >> 3) & 1;
 }
+#endif
 
 static blk_qc_t md_sbull_make_request(struct request_queue *q, struct bio *bio)
 {
 	struct md_sbull_dev *dev = bio->bi_disk->private_data;
 	//printk(KERN_NOTICE "RAID0 begins working\n");
-	//printk(KERN_NOTICE "sbull: %s: op %s, size %u, partno %u\n", __func__, (bio_data_dir(bio) == WRITE?"write":"read"), bio_sectors(bio), bio->bi_partno);
+	printk(KERN_NOTICE "sbull: %s: op %s, lba %10lu, size %10u, partno %u\n", bio->bi_disk->disk_name, (bio_data_dir(bio) == WRITE?"write":"read"), bio->bi_iter.bi_sector, bio_sectors(bio), bio->bi_partno);
 
-	int total_sectors = bio_sectors(bio);
-	int bi_sector = bio->bi_iter.bi_sector;
+#ifdef MACRO_RAID0
+	unsigned int total_sectors = bio_sectors(bio);
+	unsigned int bi_sector = bio->bi_iter.bi_sector;
 	int sectors = CHUNK_SECTS - ( bi_sector & (CHUNK_SECTS - 1));
 	int target;
+
 	if(sectors < total_sectors){
 		struct bio *split = bio_split(bio, sectors, GFP_NOIO, sbull_bio_set);
 		bio_chain(split, bio);
@@ -234,6 +241,9 @@ static blk_qc_t md_sbull_make_request(struct request_queue *q, struct bio *bio)
 	target = get_target(bi_sector);
 	bio->bi_disk =  dev->child_dev[target]->gd;
 	bio->bi_iter.bi_sector = ((bi_sector >> 4)  << 3) + (bi_sector & (CHUNK_SECTS - 1));
+#else
+	bio->bi_disk = dev->child_dev[0]->gd;
+#endif
 	generic_make_request(bio);
 	return BLK_QC_T_NONE;
 }
@@ -475,12 +485,17 @@ static void setup_md_device(struct sbull_dev *child_devs, int devcnt)
 	dev->gd->fops = &md_sbull_ops;
 	dev->gd->queue = dev->queue;
 	dev->gd->private_data = dev;
-	strcpy(dev->gd->disk_name, "sbull_raid0");
+	strcpy(dev->gd->disk_name, "SBULLR");
 	for(i=0; i < devcnt; i++)
 		dev->child_dev[i] = &child_devs[i];
 	//snprintf (dev->gd->disk_name, 32, "sbull%c", which + 'a');
+#ifdef MACRO_RAID0
 	set_capacity(dev->gd, devcnt * nsectors*(hardsect_size/KERNEL_SECTOR_SIZE));
-	//set_capacity(dev->gd, devcnt * nsectors*(hardsect_size/KERNEL_SECTOR_SIZE));
+#else
+	set_capacity(dev->gd,  nsectors*(hardsect_size/KERNEL_SECTOR_SIZE));
+#endif
+
+	
 	add_disk(dev->gd);
 	printk(KERN_NOTICE "setup md RAID0 PASS\n");
 }

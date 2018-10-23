@@ -10,6 +10,9 @@ struct bio_set *ocssdr_bio_set;
 static blk_qc_t ocssdr_make_rq(struct request_queue *q, struct bio *bio)
 {
 	struct ocssdr *ocssdr = q->queuedata;
+	pr_info("nvm: %s: op %u, bi_sector %8lu, size %8u, partno %u\n", 
+			ocssdr->disk->disk_name, bio_op(bio), bio->bi_iter.bi_sector, 
+			bio_sectors(bio), bio->bi_partno);
 
 	// 
 	bio->bi_disk = ocssdr->child_targets[0]->disk;
