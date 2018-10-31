@@ -88,7 +88,7 @@ static void pblk_gc_line_ws(struct work_struct *work)
 
 	up(&gc->gc_sem);
 
-	gc_rq->data = vmalloc(gc_rq->nr_secs * geo->csecs);
+	gc_rq->data = vmalloc(gc_rq->nr_secs * geo->sec_size);
 	if (!gc_rq->data) {
 		pr_err("pblk: could not GC line:%d (%d/%d)\n",
 					line->id, *line->vsc, gc_rq->nr_secs);
@@ -147,8 +147,10 @@ static void pblk_gc_line_prepare_ws(struct work_struct *work)
 	int ret;
 
 	invalid_bitmap = kmalloc(lm->sec_bitmap_len, GFP_KERNEL);
-	if (!invalid_bitmap)
+	if (!invalid_bitmap) {
+		pr_err("pblk: could not allocate GC invalid bitmap\n");
 		goto fail_free_ws;
+	}
 
 	emeta_buf = pblk_malloc(lm->emeta_len[0], l_mg->emeta_alloc_type,
 								GFP_KERNEL);
@@ -167,14 +169,7 @@ static void pblk_gc_line_prepare_ws(struct work_struct *work)
 	 * the line untouched. TODO: Implement a recovery routine that scans and
 	 * moves all sectors on the line.
 	 */
-
-	ret = pblk_recov_check_emeta(pblk, emeta_buf);
-	if (ret) {
-		pr_err("pblk: inconsistent emeta (line %d)\n", line->id);
-		goto fail_free_emeta;
-	}
-
-	lba_list = emeta_to_lbas(pblk, emeta_buf);
+	lba_list = pblk_recov_get_lba_list(pblk, emeta_buf);
 	if (!lba_list) {
 		pr_err("pblk: could not interpret emeta (line %d)\n", line->id);
 		goto fail_free_emeta;
@@ -193,10 +188,9 @@ static void pblk_gc_line_prepare_ws(struct work_struct *work)
 	bit = -1;
 next_rq:
 	gc_rq = kmalloc(sizeof(struct pblk_gc_rq), GFP_KERNEL);
-	if (!gc_rq) {
-        printk("pblk: fail_free_emata\n"); //add by kan
+	if (!gc_rq)
 		goto fail_free_emeta;
-    }
+
 	nr_secs = 0;
 	do {
 		bit = find_next_zero_bit(invalid_bitmap, lm->sec_per_line,
@@ -217,10 +211,9 @@ next_rq:
 	gc_rq->line = line;
 
 	gc_rq_ws = kmalloc(sizeof(struct pblk_line_ws), GFP_KERNEL);
-	if (!gc_rq_ws) {
-        printk("fail_free_gc_rq\n");
+	if (!gc_rq_ws)
 		goto fail_free_gc_rq;
-    }
+
 	gc_rq_ws->pblk = pblk;
 	gc_rq_ws->line = line;
 	gc_rq_ws->priv = gc_rq;
@@ -526,12 +519,22 @@ void pblk_gc_should_start(struct pblk *pblk)
 	}
 }
 
+/*
+ * If flush_wq == 1 then no lock should be held by the caller since
+ * flush_workqueue can sleep
+ */
+static void pblk_gc_stop(struct pblk *pblk, int flush_wq)
+{
+	pblk->gc.gc_active = 0;
+	pr_debug("pblk: gc stop\n");
+}
+
 void pblk_gc_should_stop(struct pblk *pblk)
 {
 	struct pblk_gc *gc = &pblk->gc;
 
 	if (gc->gc_active && !gc->gc_forced)
-		gc->gc_active = 0;
+		pblk_gc_stop(pblk, 0);
 }
 
 void pblk_gc_should_kick(struct pblk *pblk)
@@ -657,7 +660,7 @@ void pblk_gc_exit(struct pblk *pblk)
 
 	gc->gc_enabled = 0;
 	del_timer_sync(&gc->gc_timer);
-	gc->gc_active = 0;
+	pblk_gc_stop(pblk, 1);
 
 	if (gc->gc_ts)
 		kthread_stop(gc->gc_ts);
@@ -666,10 +669,12 @@ void pblk_gc_exit(struct pblk *pblk)
 		kthread_stop(gc->gc_reader_ts);
 
 	flush_workqueue(gc->gc_reader_wq);
-	destroy_workqueue(gc->gc_reader_wq);
+	if (gc->gc_reader_wq)
+		destroy_workqueue(gc->gc_reader_wq);
 
 	flush_workqueue(gc->gc_line_reader_wq);
-	destroy_workqueue(gc->gc_line_reader_wq);
+	if (gc->gc_line_reader_wq)
+		destroy_workqueue(gc->gc_line_reader_wq);
 
 	if (gc->gc_writer_ts)
 		kthread_stop(gc->gc_writer_ts);

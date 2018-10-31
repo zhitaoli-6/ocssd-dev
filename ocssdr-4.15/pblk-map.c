@@ -31,10 +31,6 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 	u64 paddr;
 	int nr_secs = pblk->min_write_pgs;
 	int i;
-    int meta_list_idx; //add by kan
-    int meta_list_mod; //add by kan
-	struct nvm_tgt_dev *dev = pblk->dev; //add by kan
-    struct nvm_geo *geo = &dev->geo; //add by kan 
 
 	if (pblk_line_is_full(line)) {
 		struct pblk_line *prev_line = line;
@@ -47,7 +43,6 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 	lba_list = emeta_to_lbas(pblk, emeta->buf);
 
 	paddr = pblk_alloc_page(pblk, line, nr_secs);
-
 
 	for (i = 0; i < nr_secs; i++, paddr++) {
 		__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
@@ -62,34 +57,20 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 		 * entry we are setting up for submission without taking any
 		 * lock or memory barrier.
 		 */
-        meta_list_idx = i / geo->ws_min;
-        meta_list_mod = ppa_list[i].m.sec % geo->ws_min;
-			
 		if (i < valid_secs) {
 			kref_get(&line->ref);
 			w_ctx = pblk_rb_w_ctx(&pblk->rwb, sentry + i);
 			w_ctx->ppa = ppa_list[i];
-			meta_list[meta_list_idx].lba[meta_list_mod] = cpu_to_le64(w_ctx->lba);//modify by kan
-
-            //for debug
-            meta_list[meta_list_idx].d_idx[meta_list_mod] = meta_list_idx; //add by kan for debug
-            meta_list[meta_list_idx].d_mod[meta_list_mod] = meta_list_mod; //add by kan for debug
-            meta_list[meta_list_idx].d_ppa[meta_list_mod] = ppa_list[i].ppa; //add by kan for debug
-            meta_list[meta_list_idx].d_sec_stripe = geo->ws_min; //add by kan for debug
-            meta_list[meta_list_idx].d_nr_secs = nr_secs; //add by kan for debug
-
+			meta_list[i].lba = cpu_to_le64(w_ctx->lba);
 			lba_list[paddr] = cpu_to_le64(w_ctx->lba);
 			if (lba_list[paddr] != addr_empty)
 				line->nr_valid_lbas++;
-			else
-				atomic64_inc(&pblk->pad_wa);
 		} else {
-			lba_list[paddr] = meta_list[meta_list_idx].lba[meta_list_mod] = addr_empty;//modify by kan
+			lba_list[paddr] = meta_list[i].lba = addr_empty;
 			__pblk_map_invalidate(pblk, line, paddr);
 		}
 	}
-    
-    
+
 	pblk_down_rq(pblk, ppa_list, nr_secs, lun_bitmap);
 }
 
@@ -101,18 +82,12 @@ void pblk_map_rq(struct pblk *pblk, struct nvm_rq *rqd, unsigned int sentry,
 	unsigned int map_secs;
 	int min = pblk->min_write_pgs;
 	int i;
-    struct nvm_tgt_dev *dev = pblk->dev; //add by kan 
-    struct nvm_geo *geo = &dev->geo; //add by kan
 
 	for (i = off; i < rqd->nr_ppas; i += min) {
 		map_secs = (i + min > valid_secs) ? (valid_secs % min) : min;
 		pblk_map_page_data(pblk, sentry + i, &rqd->ppa_list[i],
-					lun_bitmap, &meta_list[i/geo->ws_min], map_secs);
+					lun_bitmap, &meta_list[i], map_secs);
 	}
-
-    //add by kan for debug
-    //rqd->ppa_list[i+0].ppa = 0x0123456789abcdef; //add by kan for debug
-    //rqd->ppa_list[i+1].ppa = 0x1011121314151617; //add by kan for debug
 }
 
 /* only if erase_ppa is set, acquire erase semaphore */
@@ -132,7 +107,7 @@ void pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	for (i = 0; i < rqd->nr_ppas; i += min) {
 		map_secs = (i + min > valid_secs) ? (valid_secs % min) : min;
 		pblk_map_page_data(pblk, sentry + i, &rqd->ppa_list[i],
-					lun_bitmap, &meta_list[i/geo->ws_min], map_secs);
+					lun_bitmap, &meta_list[i], map_secs);
 
 		erase_lun = pblk_ppa_to_pos(geo, rqd->ppa_list[i]);
 
@@ -150,7 +125,7 @@ void pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 			atomic_dec(&e_line->left_eblks);
 
 			*erase_ppa = rqd->ppa_list[i];
-			erase_ppa->a.blk = e_line->id;
+			erase_ppa->g.blk = e_line->id;
 
 			spin_unlock(&e_line->lock);
 
@@ -160,12 +135,6 @@ void pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 		}
 		spin_unlock(&e_line->lock);
 	}
-
-    //add by kan for debug
-    //rqd->ppa_list[i+0].ppa = 0x0123456789abcdef; //add by kan for debug
-    //rqd->ppa_list[i+1].ppa = 0x1011121314151617; //add by kan for debug
-
-
 
 	d_line = pblk_line_get_data(pblk);
 
@@ -177,7 +146,7 @@ void pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 		return;
 
 	/* Erase blocks that are bad in this line but might not be in next */
-	if (unlikely(pblk_ppa_empty(*erase_ppa)) &&
+	if (unlikely(ppa_empty(*erase_ppa)) &&
 			bitmap_weight(d_line->blk_bitmap, lm->blk_per_line)) {
 		int bit = -1;
 
@@ -197,6 +166,6 @@ retry:
 		set_bit(bit, e_line->erase_bitmap);
 		atomic_dec(&e_line->left_eblks);
 		*erase_ppa = pblk->luns[bit].bppa; /* set ch and lun */
-		erase_ppa->a.blk = e_line->id;
+		erase_ppa->g.blk = e_line->id;
 	}
 }

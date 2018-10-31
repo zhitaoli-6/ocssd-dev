@@ -1,1 +1,1 @@
-nvme lnvm create -d nvme0n1 --lun-begin=0 --lun-end=0 -n mydevice -t pblk
+nvme lnvm create -d nvme1n1 --lun-begin=0 --lun-end=31 -n ocssd -t pblk -f
