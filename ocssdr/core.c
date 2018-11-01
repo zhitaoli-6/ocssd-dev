@@ -482,7 +482,7 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 		pr_err("nvm: target type %s not found\n", create->tgttype);
 		return -EINVAL;
 	}
-	pr_info("nvm: ocssdr find type\n");
+	//pr_info("nvm: ocssdr find type\n");
 	
 	// find ocssdr target, expect it does not exist
 	oc_t = ocssdr_find_target(create->tgtname, 1);
@@ -490,14 +490,14 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 		pr_err("nvm: ocssdr target name %s already exists.\n", create->tgtname);
 		return -EINVAL;
 	}
-	pr_info("nvm: no ocssdr target found\n");
+	//pr_info("nvm: no ocssdr target found\n");
 	oc_t = kzalloc(sizeof(struct nvm_md_target), GFP_KERNEL);
 	if(!oc_t){
 		ret = -ENOMEM;
 		return ret;
 	}
 	t = oc_t->child_targets;
-	pr_info("nvm: begin to find ocssdr child target \n");
+	pr_info("nvm: now to check existence of ocssdr child targets \n");
 	//  find sub pblk targets, expect they all exist
 	for(i = 0; i < devcnt; i++){
 		mutex_lock(&dev[i]->mlock);
@@ -510,7 +510,7 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 		mutex_unlock(&dev[i]->mlock);
 	}
 
-	pr_info("nvm: find  %d ocssdr child targets\n", devcnt);
+	pr_info("nvm: ocssdr child targets check PASS\n", devcnt);
 	tdisk = alloc_disk(0);
 	if (!tdisk) {
 		ret = -ENOMEM;
@@ -523,7 +523,7 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 		ret = -ENOMEM;
 		goto err_disk;
 	}
-	pr_info("nvm: target %s queue init pass\n", create->tgtname);
+	//pr_info("nvm: target %s queue init pass\n", create->tgtname);
 	blk_queue_make_request(tqueue, tt->make_rq);
 
 	strlcpy(tdisk->disk_name, create->tgtname, sizeof(tdisk->disk_name));
@@ -1167,10 +1167,10 @@ EXPORT_SYMBOL(nvm_unregister);
 static int __nvm_configure_create(struct nvm_ioctl_create *create)
 {
 	struct nvm_dev *dev[OCSSDR_MAX_DEVICES_CNT];
-	struct nvm_ioctl_create_simple *s;
+	//struct nvm_ioctl_create_simple *s;
 	char *devname[OCSSDR_MAX_DEVICES_CNT];
 	char *tgtname[OCSSDR_MAX_DEVICES_CNT];
-	char tgttype[NVM_TTYPE_NAME_LEN];
+	char tgttype[NVM_TTYPE_NAME_MAX];
 	int devcnt, i;
 	int len;
 	int ret = 0;
@@ -1324,10 +1324,6 @@ static long nvm_ioctl_dev_create(struct file *file, void __user *arg)
 	if (copy_from_user(&create, arg, sizeof(struct nvm_ioctl_create)))
 		return -EFAULT;
 
-	if(strcmp(create->tgttype, "pblk") != 0 && strcmp(create->tgttype, "ocssdr") != 0){
-		pr_err("nvm: invalid target type\n");
-		return -EINVAL:
-	}
 
 	if (create.conf.type == NVM_CONFIG_TYPE_EXTENDED &&
 	    create.conf.e.rsv != 0) {
@@ -1338,6 +1334,11 @@ static long nvm_ioctl_dev_create(struct file *file, void __user *arg)
 	create.dev[DISK_NAME_LEN - 1] = '\0';
 	create.tgttype[NVM_TTYPE_NAME_MAX - 1] = '\0';
 	create.tgtname[DISK_NAME_LEN - 1] = '\0';
+
+	if(strcmp(create.tgttype, "pblk") != 0 && strcmp(create.tgttype, "ocssdr") != 0){
+		pr_err("nvm: invalid target type\n");
+		return -EINVAL;
+	}
 
 	if (create.flags != 0) {
 		__u32 flags = create.flags;

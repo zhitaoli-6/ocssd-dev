@@ -11,11 +11,19 @@
 
 #include <linux/lightnvm.h>
 
+#define LOGICAL_SIZE  (1<<3)
+#define CHUNK_SIZE  LOGICAL_SIZE
+
+enum {
+	MODE_STACK = 0,
+	MODE_STRIPE = 1,
+};
 
 struct ocssdr {
 	struct gendisk *disk;
 	struct nvm_target **child_targets;
 	int child_target_cnt;
+	int r_mode;
 };
 
 #endif
