@@ -1156,6 +1156,9 @@ static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk,
 	struct pblk *pblk;
 	int ret;
 
+
+	pr_info("pblk: OCSSD version %d\n", geo->version);
+
 	/* pblk supports 1.2 and 2.0 versions */
 	if (!(geo->version == NVM_OCSSD_SPEC_12 ||
 					geo->version == NVM_OCSSD_SPEC_20)) {
@@ -1261,7 +1264,11 @@ static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk,
 			geo->all_luns, pblk->l_mg.nr_lines,
 			(unsigned long long)pblk->rl.nr_secs,
 			pblk->rwb.nr_entries);
-	pr_info("pblk: ws_min=%d ws_opt=%d\n",geo->ws_min, geo->ws_opt);
+	//pr_info("pblk: ws_min=%d ws_opt=%d\n",geo->ws_min, geo->ws_opt);
+	pr_info("pblk: ws_min=%u ws_opt=%u mw_cunits=%u maxoc=%u maxocpu=%u\n",
+			geo->ws_min, geo->ws_opt, geo->mw_cunits, geo->maxoc, geo->maxocpu);
+	pr_info("pblk: geo info- num_ch %d, num_lun %d, num_chk %u, clba %u, csecs %u, sos %u\n",
+			geo->num_ch, geo->num_lun, geo->num_chk, geo->clba, geo->csecs, geo->sos);
 
 	wake_up_process(pblk->writer_ts);
 
