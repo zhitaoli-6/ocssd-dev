@@ -56,9 +56,11 @@ static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
 {
 	struct pblk *pblk = q->queuedata;
 
+	/*
 	pr_info("nvm: %s: op %u, bi_sector %8lu, size %8u, partno %u\n", 
 			pblk->disk->disk_name, bio_op(bio), bio->bi_iter.bi_sector, 
 			bio_sectors(bio), bio->bi_partno);
+	*/
 	if (bio_op(bio) == REQ_OP_DISCARD) {
 		pblk_discard(pblk, bio);
 		if (!(bio->bi_opf & REQ_PREFLUSH)) {
@@ -751,8 +753,17 @@ static int pblk_setup_line_meta_20(struct pblk *pblk, struct pblk_line *line,
 		chunk->slba = chunk_meta->slba;
 		chunk->cnlb = chunk_meta->cnlb;
 		chunk->wp = chunk_meta->wp;
+		
+		/*
+		if(line->id <= 20 && i == 0){
+			pr_info("line %d first block meta: %u %u %u %llu %llu %llu\n", line->id, 
+					chunk->state, chunk->type, chunk->wi, chunk->slba, chunk->cnlb, 
+					chunk->wp);
+		}
+		*/
 
 		if (!(chunk->state & NVM_CHK_ST_OFFLINE))
+		//if (!(chunk->state & NVM_CHK_ST_OFFLINE) && i < 30)
 			continue;
 
 		if (chunk->type & NVM_CHK_TP_SZ_SPEC) {
@@ -794,8 +805,11 @@ static long pblk_setup_line_meta(struct pblk *pblk, struct pblk_line *line,
 					chk_in_line < lm->min_blk_line) {
 		line->state = PBLK_LINESTATE_BAD;
 		list_add_tail(&line->list, &l_mg->bad_list);
+		//pr_info("nvm line: add line %d into bad_list; chk_in_line %ld\n", line_id, chk_in_line);
 		return 0;
 	}
+
+	//pr_info("nvm line: add line %d into free_list; chk_in_line %ld\n", line_id, chk_in_line);
 
 	atomic_set(&line->blk_in_line, chk_in_line);
 	list_add_tail(&line->list, &l_mg->free_list);
@@ -1052,6 +1066,7 @@ static int pblk_lines_init(struct pblk *pblk)
 	}
 
 	pblk_set_provision(pblk, nr_free_chks);
+	pr_info("nvm nr_free_chks: %ld\n", nr_free_chks);
 
 	kfree(chunk_meta);
 	return 0;

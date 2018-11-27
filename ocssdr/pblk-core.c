@@ -1855,7 +1855,10 @@ void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas)
 	struct nvm_geo *geo = &dev->geo;
 	int pos = pblk_ppa_to_pos(geo, ppa_list[0]);
 
+	//struct ppa_addr ppa0 = ppa_list[0];
+	//pr_info("nvm addr page: sta lock ch %u, lun %u, blk %u, sec %u\n", ppa0.a.ch, ppa0.a.lun, ppa0.a.blk, ppa0.m.sec);
 	__pblk_down_page(pblk, ppa_list, nr_ppas, pos);
+	//pr_info("nvm addr page: end lock ch %u, lun %u, blk %u, sec %u\n", ppa0.a.ch, ppa0.a.lun, ppa0.a.blk, ppa0.m.sec);
 }
 
 void pblk_down_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
@@ -1870,8 +1873,12 @@ void pblk_down_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 	 */
 	if (test_and_set_bit(pos, lun_bitmap))
 		return;
+	
+	//struct ppa_addr ppa0 = ppa_list[0];
+	//pr_info("nvm addr rqd: sta lock ch %u, lun %u, blk %u, sec %u\n", ppa0.a.ch, ppa0.a.lun, ppa0.a.blk, ppa0.m.sec);
 
 	__pblk_down_page(pblk, ppa_list, nr_ppas, pos);
+	//pr_info("nvm addr rqd: end lock ch %u, lun %u, blk %u, sec %u\n", ppa0.a.ch, ppa0.a.lun, ppa0.a.blk, ppa0.m.sec);
 }
 
 void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas)
@@ -1890,7 +1897,10 @@ void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas)
 #endif
 
 	rlun = &pblk->luns[pos];
+	//struct ppa_addr ppa0 = ppa_list[0];
+	//pr_info("nvm addr page: sta unlock ch %u, lun %u, blk %u, sec %u\n", ppa0.a.ch, ppa0.a.lun, ppa0.a.blk, ppa0.m.sec);
 	up(&rlun->wr_sem);
+	//pr_info("nvm addr page: end unlock ch %u, lun %u, blk %u, sec %u\n", ppa0.a.ch, ppa0.a.lun, ppa0.a.blk, ppa0.m.sec);
 }
 
 void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
@@ -1905,6 +1915,7 @@ void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 	while ((bit = find_next_bit(lun_bitmap, num_lun, bit + 1)) < num_lun) {
 		rlun = &pblk->luns[bit];
 		up(&rlun->wr_sem);
+		//pr_info("nvm addr rqd: end unlock lun index %d\n", bit);
 	}
 }
 
