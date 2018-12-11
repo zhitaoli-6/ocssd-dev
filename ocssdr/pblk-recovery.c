@@ -14,6 +14,10 @@
  * pblk-recovery.c - pblk's recovery path
  */
 
+
+// md-bugs: recovery work left as in future work, so dev_id contained in this file
+// may bring bugs, which is modified only for passing compiler check.
+
 #include "pblk.h"
 
 void pblk_submit_rec(struct work_struct *work)
@@ -45,7 +49,7 @@ void pblk_submit_rec(struct work_struct *work)
 		goto err;
 	}
 
-	if (pblk_setup_w_rec_rq(pblk, rqd, c_ctx)) {
+	if (pblk_setup_w_rec_rq(pblk, rqd, c_ctx, DEFAULT_DEV_ID)) {
 		pr_err("pblk: could not setup recovery request\n");
 		goto err;
 	}
@@ -54,7 +58,7 @@ void pblk_submit_rec(struct work_struct *work)
 	atomic_long_add(nr_rec_secs, &pblk->recov_writes);
 #endif
 
-	ret = pblk_submit_io(pblk, rqd);
+	ret = pblk_submit_io(pblk, rqd, DEFAULT_DEV_ID);
 	if (ret) {
 		pr_err("pblk: I/O submission failed: %d\n", ret);
 		goto err;
@@ -126,7 +130,7 @@ int pblk_recov_check_emeta(struct pblk *pblk, struct line_emeta *emeta_buf)
 
 static int pblk_recov_l2p_from_emeta(struct pblk *pblk, struct pblk_line *line)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	struct pblk_line_meta *lm = &pblk->lm;
 	struct pblk_emeta *emeta = line->emeta;
@@ -181,7 +185,7 @@ static int pblk_recov_l2p_from_emeta(struct pblk *pblk, struct pblk_line *line)
 
 static int pblk_calc_sec_in_line(struct pblk *pblk, struct pblk_line *line)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	struct pblk_line_meta *lm = &pblk->lm;
 	int nr_bb = bitmap_weight(line->blk_bitmap, lm->blk_per_line);
@@ -202,7 +206,7 @@ struct pblk_recov_alloc {
 static int pblk_recov_read_oob(struct pblk *pblk, struct pblk_line *line,
 			       struct pblk_recov_alloc p, u64 r_ptr)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	struct ppa_addr *ppa_list;
 	struct pblk_sec_meta *meta_list;
@@ -278,7 +282,7 @@ next_read_rq:
 	}
 
 	/* If read fails, more padding is needed */
-	ret = pblk_submit_io_sync(pblk, rqd);
+	ret = pblk_submit_io_sync(pblk, rqd, DEFAULT_DEV_ID);
 	if (ret) {
 		pr_err("pblk: I/O submission failed: %d\n", ret);
 		return ret;
@@ -326,7 +330,7 @@ static void pblk_end_io_recov(struct nvm_rq *rqd)
 	struct pblk_pad_rq *pad_rq = rqd->private;
 	struct pblk *pblk = pad_rq->pblk;
 
-	pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas);
+	pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas, DEFAULT_DEV_ID);
 
 	pblk_free_rqd(pblk, rqd, PBLK_WRITE_INT);
 
@@ -337,7 +341,7 @@ static void pblk_end_io_recov(struct nvm_rq *rqd)
 static int pblk_recov_pad_oob(struct pblk *pblk, struct pblk_line *line,
 			      int left_ppas)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	struct ppa_addr *ppa_list;
 	struct pblk_sec_meta *meta_list;
@@ -395,7 +399,7 @@ next_pad_rq:
 	dma_ppa_list = dma_meta_list + pblk_dma_meta_size;
 
 	bio = pblk_bio_map_addr(pblk, data, rq_ppas, rq_len,
-						PBLK_VMALLOC_META, GFP_KERNEL);
+						PBLK_VMALLOC_META, GFP_KERNEL, DEFAULT_DEV_ID);
 	if (IS_ERR(bio)) {
 		ret = PTR_ERR(bio);
 		goto fail_free_meta;
@@ -450,12 +454,12 @@ next_pad_rq:
 	}
 
 	kref_get(&pad_rq->ref);
-	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas);
+	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas, DEFAULT_DEV_ID);
 
-	ret = pblk_submit_io(pblk, rqd);
+	ret = pblk_submit_io(pblk, rqd, DEFAULT_DEV_ID);
 	if (ret) {
 		pr_err("pblk: I/O submission failed: %d\n", ret);
-		pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas);
+		pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas, DEFAULT_DEV_ID);
 		goto fail_free_bio;
 	}
 
@@ -499,7 +503,7 @@ fail_free_pad:
 static int pblk_recov_scan_all_oob(struct pblk *pblk, struct pblk_line *line,
 				   struct pblk_recov_alloc p)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	struct ppa_addr *ppa_list;
 	struct pblk_sec_meta *meta_list;
@@ -574,7 +578,7 @@ next_rq:
 				addr_to_gen_ppa(pblk, w_ptr, line->id);
 	}
 
-	ret = pblk_submit_io_sync(pblk, rqd);
+	ret = pblk_submit_io_sync(pblk, rqd, DEFAULT_DEV_ID);
 	if (ret) {
 		pr_err("pblk: I/O submission failed: %d\n", ret);
 		return ret;
@@ -614,7 +618,7 @@ next_rq:
 		line->left_msecs += nr_error_bits;
 		bitmap_clear(line->map_bitmap, line->cur_sec, nr_error_bits);
 
-		pad_secs = pblk_pad_distance(pblk);
+		pad_secs = pblk_pad_distance(pblk, line->dev_id);
 		if (pad_secs > line->left_msecs)
 			pad_secs = line->left_msecs;
 
@@ -639,7 +643,7 @@ next_rq:
 static int pblk_recov_scan_oob(struct pblk *pblk, struct pblk_line *line,
 			       struct pblk_recov_alloc p, int *done)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	struct ppa_addr *ppa_list;
 	struct pblk_sec_meta *meta_list;
@@ -711,7 +715,7 @@ next_rq:
 				addr_to_gen_ppa(pblk, paddr, line->id);
 	}
 
-	ret = pblk_submit_io_sync(pblk, rqd);
+	ret = pblk_submit_io_sync(pblk, rqd, DEFAULT_DEV_ID);
 	if (ret) {
 		pr_err("pblk: I/O submission failed: %d\n", ret);
 		bio_put(bio);
@@ -762,7 +766,7 @@ next_rq:
 /* Scan line for lbas on out of bound area */
 static int pblk_recov_l2p_from_oob(struct pblk *pblk, struct pblk_line *line)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	struct nvm_rq *rqd;
 	struct ppa_addr *ppa_list;
@@ -840,7 +844,8 @@ static void pblk_recov_line_add_ordered(struct list_head *head,
 
 static u64 pblk_line_emeta_start(struct pblk *pblk, struct pblk_line *line)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	int dev_id = line->dev_id;
+	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
 	struct nvm_geo *geo = &dev->geo;
 	struct pblk_line_meta *lm = &pblk->lm;
 	unsigned int emeta_secs;
@@ -921,8 +926,9 @@ static int pblk_line_was_written(struct pblk_line *line,
 
 struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 {
+	int dev_id = DEFAULT_DEV_ID;
 	struct pblk_line_meta *lm = &pblk->lm;
-	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
+	struct pblk_line_mgmt *l_mg = &pblk->l_mg[dev_id];
 	struct pblk_line *line, *tline, *data_line = NULL;
 	struct pblk_smeta *smeta;
 	struct pblk_emeta *emeta;
@@ -948,7 +954,7 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 	for (i = 0; i < l_mg->nr_lines; i++) {
 		u32 crc;
 
-		line = &pblk->lines[i];
+		line = &pblk->lines[dev_id][i];
 
 		memset(smeta, 0, lm->smeta_len);
 		line->smeta = smeta;
@@ -1079,10 +1085,10 @@ next:
 	if (!open_lines) {
 		WARN_ON_ONCE(!test_and_clear_bit(meta_line,
 							&l_mg->meta_bitmap));
-		pblk_line_replace_data(pblk);
+		pblk_line_replace_data(pblk, dev_id);
 	} else {
 		/* Allocate next line for preparation */
-		l_mg->data_next = pblk_line_get(pblk);
+		l_mg->data_next = pblk_line_get(pblk, dev_id);
 		if (l_mg->data_next) {
 			l_mg->data_next->seq_nr = l_mg->d_seq_nr++;
 			l_mg->data_next->type = PBLK_LINETYPE_DATA;
@@ -1108,7 +1114,7 @@ out:
 int pblk_recov_pad(struct pblk *pblk)
 {
 	struct pblk_line *line;
-	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
+	struct pblk_line_mgmt *l_mg = &pblk->l_mg[DEFAULT_DEV_ID];
 	int left_msecs;
 	int ret = 0;
 

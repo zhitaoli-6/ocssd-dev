@@ -346,6 +346,7 @@ static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 	struct nvm_tgt_type *tt;
 	struct nvm_target *t;
 	struct nvm_tgt_dev *tgt_dev;
+	struct nvm_tgt_dev **tgt_dev_arr;
 	void *targetdata;
 	int ret;
 
@@ -399,6 +400,13 @@ static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 		ret = -ENOMEM;
 		goto err_t;
 	}
+	tgt_dev_arr = kmalloc(sizeof(struct nvm_tgt_dev *), GFP_KERNEL);
+	if(!tgt_dev_arr){
+		ret = -ENOMEM;
+		goto err_dev;
+	}
+	tgt_dev_arr[0] = tgt_dev;
+	
 
 	tdisk = alloc_disk(0);
 	if (!tdisk) {
@@ -420,11 +428,13 @@ static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 	tdisk->fops = &nvm_fops;
 	tdisk->queue = tqueue;
 
-	targetdata = tt->init(tgt_dev, tdisk, create->flags);
+	pr_info("nvm: pblk tgt %s init start\n", create->tgtname);
+	targetdata = tt->init(tgt_dev_arr, 1, tdisk, create->flags);
 	if (IS_ERR(targetdata)) {
 		ret = PTR_ERR(targetdata);
 		goto err_init;
 	}
+	pr_info("nvm: pblk tgt %s init done\n", create->tgtname);
 
 	tdisk->private_data = targetdata;
 	tqueue->queuedata = targetdata;

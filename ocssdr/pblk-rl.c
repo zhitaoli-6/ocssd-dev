@@ -191,20 +191,20 @@ void pblk_rl_free(struct pblk_rl *rl)
 void pblk_rl_init(struct pblk_rl *rl, int budget)
 {
 	struct pblk *pblk = container_of(rl, struct pblk, rl);
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[0];
 	struct nvm_geo *geo = &dev->geo;
-	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
+	//struct pblk_line_mgmt *l_mg = &pblk->l_mg;
 	struct pblk_line_meta *lm = &pblk->lm;
-	int min_blocks = lm->blk_per_line * PBLK_GC_RSV_LINE;
+	int min_blocks = lm->blk_per_line * PBLK_GC_RSV_LINE * pblk->nr_dev;
 	int sec_meta, blk_meta;
 
 	unsigned int rb_windows;
 
 	/* Consider sectors used for metadata */
-	sec_meta = (lm->smeta_sec + lm->emeta_sec[0]) * l_mg->nr_free_lines;
+	sec_meta = (lm->smeta_sec + lm->emeta_sec[0]) * pblk->nr_free_lines;
 	blk_meta = DIV_ROUND_UP(sec_meta, geo->clba);
 
-	rl->high = pblk->op_blks - blk_meta - lm->blk_per_line;
+	rl->high = pblk->op_blks - blk_meta - lm->blk_per_line * pblk->nr_dev;
 	rl->high_pw = get_count_order(rl->high);
     
     printk("pblk: rl->high = %d rl->high_pw=%d\n", rl->high, rl->high_pw); //add by kan for debug 

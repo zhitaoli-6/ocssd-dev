@@ -70,7 +70,8 @@ struct ppa_addr {
 		} m;
 
 		struct {
-			u64 line	: 63;
+			u64 line	: 60;
+			u64 dev_id	: 3;
 			u64 is_cached	: 1;
 		} c;
 
@@ -493,7 +494,7 @@ static inline struct ppa_addr dev_to_generic_addr(struct nvm_dev *dev,
 
 typedef blk_qc_t (nvm_tgt_make_rq_fn)(struct request_queue *, struct bio *);
 typedef sector_t (nvm_tgt_capacity_fn)(void *);
-typedef void *(nvm_tgt_init_fn)(struct nvm_tgt_dev *, struct gendisk *,
+typedef void *(nvm_tgt_init_fn)(struct nvm_tgt_dev **, int, struct gendisk *,
 				int flags);
 typedef void *(nvm_tgt_minit_fn)(int t_dev_cnt, struct nvm_target **, struct gendisk *,
 				int flags);

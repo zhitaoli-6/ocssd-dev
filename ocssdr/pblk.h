@@ -57,6 +57,8 @@
 
 #define PBLK_DEFAULT_OP (21)
 
+#define DEFAULT_DEV_ID (0)
+
 enum {
 	PBLK_READ		= READ,
 	PBLK_WRITE		= WRITE,/* Write from write buffer */
@@ -425,6 +427,7 @@ struct pblk_line {
 	unsigned int id;		/* Line number corresponds to the
 					 * block line
 					 */
+	int dev_id; /* Device id */
 	unsigned int seq_nr;		/* Unique line sequence number */
 
 	int state;			/* PBLK_LINESTATE_X */
@@ -581,15 +584,17 @@ struct pblk_addrf {
 };
 
 struct pblk {
-	struct nvm_tgt_dev *dev;
+	struct nvm_tgt_dev **devs;
+	int nr_dev;
 	struct gendisk *disk;
 
 	struct kobject kobj;
 
-	struct pblk_lun *luns;
+	struct pblk_lun **luns;
 
-	struct pblk_line *lines;		/* Line array */
-	struct pblk_line_mgmt l_mg;		/* Line management */
+	int nr_free_lines; /* Total number of lines of multiple devices*/
+	struct pblk_line **lines;		/* Line array */
+	struct pblk_line_mgmt *l_mg;		/* Line management */
 	struct pblk_line_meta lm;		/* Line metadata */
 
 	struct nvm_addrf addrf;		/* Aligned address format */
@@ -750,27 +755,27 @@ struct nvm_rq *pblk_alloc_rqd(struct pblk *pblk, int type);
 void pblk_free_rqd(struct pblk *pblk, struct nvm_rq *rqd, int type);
 void pblk_set_sec_per_write(struct pblk *pblk, int sec_per_write);
 int pblk_setup_w_rec_rq(struct pblk *pblk, struct nvm_rq *rqd,
-			struct pblk_c_ctx *c_ctx);
+			struct pblk_c_ctx *c_ctx, int dev_id);
 void pblk_discard(struct pblk *pblk, struct bio *bio);
-struct nvm_chk_meta *pblk_chunk_get_info(struct pblk *pblk);
+struct nvm_chk_meta *pblk_chunk_get_info(struct pblk *pblk, int dev_id);
 struct nvm_chk_meta *pblk_chunk_get_off(struct pblk *pblk,
 					      struct nvm_chk_meta *lp,
-					      struct ppa_addr ppa);
+					      struct ppa_addr ppa, int dev_id);
 void pblk_log_write_err(struct pblk *pblk, struct nvm_rq *rqd);
 void pblk_log_read_err(struct pblk *pblk, struct nvm_rq *rqd);
-int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd);
-int pblk_submit_io_sync(struct pblk *pblk, struct nvm_rq *rqd);
+int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd, int dev_id);
+int pblk_submit_io_sync(struct pblk *pblk, struct nvm_rq *rqd, int dev_id);
 int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line);
 struct bio *pblk_bio_map_addr(struct pblk *pblk, void *data,
 			      unsigned int nr_secs, unsigned int len,
-			      int alloc_type, gfp_t gfp_mask);
-struct pblk_line *pblk_line_get(struct pblk *pblk);
-struct pblk_line *pblk_line_get_first_data(struct pblk *pblk);
-struct pblk_line *pblk_line_replace_data(struct pblk *pblk);
+			      int alloc_type, gfp_t gfp_mask, int dev_id);
+struct pblk_line *pblk_line_get(struct pblk *pblk, int dev_id);
+struct pblk_line *pblk_line_get_first_data(struct pblk *pblk, int dev_id);
+struct pblk_line *pblk_line_replace_data(struct pblk *pblk, int dev_id);
 int pblk_line_recov_alloc(struct pblk *pblk, struct pblk_line *line);
 void pblk_line_recov_close(struct pblk *pblk, struct pblk_line *line);
-struct pblk_line *pblk_line_get_data(struct pblk *pblk);
-struct pblk_line *pblk_line_get_erase(struct pblk *pblk);
+struct pblk_line *pblk_line_get_data(struct pblk *pblk, int dev_id);
+struct pblk_line *pblk_line_get_erase(struct pblk *pblk, int dev_id);
 int pblk_line_erase(struct pblk *pblk, struct pblk_line *line);
 int pblk_line_is_full(struct pblk_line *line);
 void pblk_line_free(struct pblk *pblk, struct pblk_line *line);
@@ -785,7 +790,7 @@ u64 pblk_line_smeta_start(struct pblk *pblk, struct pblk_line *line);
 int pblk_line_read_smeta(struct pblk *pblk, struct pblk_line *line);
 int pblk_line_read_emeta(struct pblk *pblk, struct pblk_line *line,
 			 void *emeta_buf);
-int pblk_blk_erase_async(struct pblk *pblk, struct ppa_addr erase_ppa);
+int pblk_blk_erase_async(struct pblk *pblk, struct ppa_addr erase_ppa, int dev_id);
 void pblk_line_put(struct kref *ref);
 void pblk_line_put_wq(struct kref *ref);
 struct list_head *pblk_line_gc_list(struct pblk *pblk, struct pblk_line *line);
@@ -795,15 +800,15 @@ u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
 u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
 int pblk_calc_secs(struct pblk *pblk, unsigned long secs_avail,
 		   unsigned long secs_to_flush);
-void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas);
+void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas, int dev_id);
 void pblk_down_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
-		  unsigned long *lun_bitmap);
-void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas);
+		  unsigned long *lun_bitmap, int dev_id);
+void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas, int dev_id);
 void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
-		unsigned long *lun_bitmap);
+		unsigned long *lun_bitmap, int dev_id);
 void pblk_end_io_sync(struct nvm_rq *rqd);
 int pblk_bio_add_pages(struct pblk *pblk, struct bio *bio, gfp_t flags,
-		       int nr_pages);
+		       int nr_pages, int dev_id);
 void pblk_bio_free_pages(struct pblk *pblk, struct bio *bio, int off,
 			 int nr_pages);
 void pblk_map_invalidate(struct pblk *pblk, struct ppa_addr ppa);
@@ -833,10 +838,10 @@ int pblk_write_gc_to_cache(struct pblk *pblk, struct pblk_gc_rq *gc_rq);
  */
 void pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 		       unsigned int sentry, unsigned long *lun_bitmap,
-		       unsigned int valid_secs, struct ppa_addr *erase_ppa);
+		       unsigned int valid_secs, struct ppa_addr *erase_ppa, int dev_id);
 void pblk_map_rq(struct pblk *pblk, struct nvm_rq *rqd, unsigned int sentry,
 		 unsigned long *lun_bitmap, unsigned int valid_secs,
-		 unsigned int off);
+		 unsigned int off, int dev_id);
 
 /*
  * pblk write thread
@@ -953,9 +958,9 @@ static inline int pblk_line_vsc(struct pblk_line *line)
 	return le32_to_cpu(*line->vsc);
 }
 
-static inline int pblk_pad_distance(struct pblk *pblk)
+static inline int pblk_pad_distance(struct pblk *pblk, int dev_id)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
 	struct nvm_geo *geo = &dev->geo;
 
 	return geo->mw_cunits * geo->all_luns * geo->ws_opt;
@@ -974,7 +979,8 @@ static inline int pblk_ppa_to_pos(struct nvm_geo *geo, struct ppa_addr p)
 static inline struct ppa_addr addr_to_gen_ppa(struct pblk *pblk, u64 paddr,
 					      u64 line_id)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	//int dev_id = ppa_get_dev(paddr);
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	struct ppa_addr ppa;
 
@@ -1014,7 +1020,7 @@ static inline struct ppa_addr addr_to_gen_ppa(struct pblk *pblk, u64 paddr,
 static inline u64 pblk_dev_ppa_to_line_addr(struct pblk *pblk,
 							struct ppa_addr p)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	u64 paddr;
 
@@ -1054,7 +1060,7 @@ static inline struct ppa_addr pblk_ppa32_to_ppa64(struct pblk *pblk, u32 ppa32)
 		ppa64.c.line = ppa32 & ((~0U) >> 1);
 		ppa64.c.is_cached = 1;
 	} else {
-		struct nvm_tgt_dev *dev = pblk->dev;
+		struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 		struct nvm_geo *geo = &dev->geo;
 
 		if (geo->version == NVM_OCSSD_SPEC_12) {
@@ -1100,7 +1106,7 @@ static inline u32 pblk_ppa64_to_ppa32(struct pblk *pblk, struct ppa_addr ppa64)
 		ppa32 |= ppa64.c.line;
 		ppa32 |= 1U << 31;
 	} else {
-		struct nvm_tgt_dev *dev = pblk->dev;
+		struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 		struct nvm_geo *geo = &dev->geo;
 
 		if (geo->version == NVM_OCSSD_SPEC_12) {
@@ -1193,6 +1199,16 @@ static inline struct ppa_addr pblk_cacheline_to_addr(int addr)
 	return p;
 }
 
+static inline int pblk_get_ppa_dev_id(struct ppa_addr ppa){
+	return ppa.c.dev_id;
+}
+
+static inline struct ppa_addr pblk_set_ppa_dev_id(struct ppa_addr ppa, int dev_id){
+	struct ppa_addr new_ppa = ppa;
+	new_ppa.c.dev_id = dev_id;
+	return new_ppa;
+}
+
 static inline u32 pblk_calc_meta_header_crc(struct pblk *pblk,
 					    struct line_header *header)
 {
@@ -1234,7 +1250,7 @@ static inline u32 pblk_calc_emeta_crc(struct pblk *pblk,
 
 static inline int pblk_set_progr_mode(struct pblk *pblk, int type)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	int flags;
 
@@ -1256,7 +1272,7 @@ enum {
 
 static inline int pblk_set_read_mode(struct pblk *pblk, int type)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	int flags;
 
@@ -1273,6 +1289,18 @@ static inline int pblk_set_read_mode(struct pblk *pblk, int type)
 static inline int pblk_io_aligned(struct pblk *pblk, int nr_secs)
 {
 	return !(nr_secs % pblk->min_write_pgs);
+}
+
+
+
+static inline int pblk_get_rq_dev_id(struct pblk *pblk, struct nvm_rq *rqd){
+	int dev_id;
+	struct nvm_tgt_dev *dev = rqd->dev;
+	for(dev_id = 0; dev_id < pblk->nr_dev; dev_id++){
+		if(pblk->devs[dev_id] == dev) 
+			return dev_id;
+	}
+	return -1;
 }
 
 #ifdef CONFIG_NVM_DEBUG
@@ -1300,13 +1328,13 @@ static inline void pblk_print_failed_rqd(struct pblk *pblk, struct nvm_rq *rqd,
 	int bit = -1;
 
 	if (rqd->nr_ppas ==  1) {
-		print_ppa(&pblk->dev->geo, &rqd->ppa_addr, "rqd", error);
+		print_ppa(&pblk->devs[DEFAULT_DEV_ID]->geo, &rqd->ppa_addr, "rqd", error);
 		return;
 	}
 
 	while ((bit = find_next_bit((void *)&rqd->ppa_status, rqd->nr_ppas,
 						bit + 1)) < rqd->nr_ppas) {
-		print_ppa(&pblk->dev->geo, &rqd->ppa_list[bit], "rqd", error);
+		print_ppa(&pblk->devs[DEFAULT_DEV_ID]->geo, &rqd->ppa_list[bit], "rqd", error);
 	}
 
 	pr_err("error:%d, ppa_status:%llx\n", error, rqd->ppa_status);
@@ -1349,7 +1377,7 @@ static inline int pblk_boundary_ppa_checks(struct nvm_tgt_dev *tgt_dev,
 
 static inline int pblk_check_io(struct pblk *pblk, struct nvm_rq *rqd)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct ppa_addr *ppa_list;
 
 	ppa_list = (rqd->nr_ppas > 1) ? rqd->ppa_list : &rqd->ppa_addr;
@@ -1366,7 +1394,7 @@ static inline int pblk_check_io(struct pblk *pblk, struct nvm_rq *rqd)
 
 		for (i = 0; i < rqd->nr_ppas; i++) {
 			ppa = ppa_list[i];
-			line = &pblk->lines[pblk_ppa_to_line(ppa)];
+			line = &pblk->lines[DEFAULT_DEV_ID][pblk_ppa_to_line(ppa)];
 
 			spin_lock(&line->lock);
 			if (line->state != PBLK_LINESTATE_OPEN) {

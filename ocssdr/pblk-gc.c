@@ -58,7 +58,8 @@ static void pblk_gc_writer_kick(struct pblk_gc *gc)
 
 static void pblk_put_line_back(struct pblk *pblk, struct pblk_line *line)
 {
-	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
+	int dev_id = line->dev_id;
+	struct pblk_line_mgmt *l_mg = &pblk->l_mg[dev_id];
 	struct list_head *move_list;
 
 	spin_lock(&line->lock);
@@ -79,11 +80,12 @@ static void pblk_gc_line_ws(struct work_struct *work)
 	struct pblk_line_ws *gc_rq_ws = container_of(work,
 						struct pblk_line_ws, ws);
 	struct pblk *pblk = gc_rq_ws->pblk;
-	struct nvm_tgt_dev *dev = pblk->dev;
-	struct nvm_geo *geo = &dev->geo;
 	struct pblk_gc *gc = &pblk->gc;
 	struct pblk_line *line = gc_rq_ws->line;
 	struct pblk_gc_rq *gc_rq = gc_rq_ws->priv;
+	int dev_id = line->dev_id;
+	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
+	struct nvm_geo *geo = &dev->geo;
 	int ret;
 
 	up(&gc->gc_sem);
@@ -135,7 +137,8 @@ static void pblk_gc_line_prepare_ws(struct work_struct *work)
 									ws);
 	struct pblk *pblk = line_ws->pblk;
 	struct pblk_line *line = line_ws->line;
-	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
+	int dev_id = line->dev_id;
+	struct pblk_line_mgmt *l_mg = &pblk->l_mg[dev_id];
 	struct pblk_line_meta *lm = &pblk->lm;
 	struct pblk_gc *gc = &pblk->gc;
 	struct line_emeta *emeta_buf;
@@ -361,31 +364,35 @@ static bool pblk_gc_should_run(struct pblk_gc *gc, struct pblk_rl *rl)
 
 void pblk_gc_free_full_lines(struct pblk *pblk)
 {
-	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
+	struct pblk_line_mgmt *l_mg;
 	struct pblk_gc *gc = &pblk->gc;
 	struct pblk_line *line;
+	int dev_id;
 
-	do {
-		spin_lock(&l_mg->gc_lock);
-		if (list_empty(&l_mg->gc_full_list)) {
+	for(dev_id = 0; dev_id < pblk->nr_dev; dev_id++){
+		l_mg = &pblk->l_mg[dev_id];
+		do {
+			spin_lock(&l_mg->gc_lock);
+			if (list_empty(&l_mg->gc_full_list)) {
+				spin_unlock(&l_mg->gc_lock);
+				return;
+			}
+
+			line = list_first_entry(&l_mg->gc_full_list,
+								struct pblk_line, list);
+
+			spin_lock(&line->lock);
+			WARN_ON(line->state != PBLK_LINESTATE_CLOSED);
+			line->state = PBLK_LINESTATE_GC;
+			spin_unlock(&line->lock);
+
+			list_del(&line->list);
 			spin_unlock(&l_mg->gc_lock);
-			return;
-		}
 
-		line = list_first_entry(&l_mg->gc_full_list,
-							struct pblk_line, list);
-
-		spin_lock(&line->lock);
-		WARN_ON(line->state != PBLK_LINESTATE_CLOSED);
-		line->state = PBLK_LINESTATE_GC;
-		spin_unlock(&line->lock);
-
-		list_del(&line->list);
-		spin_unlock(&l_mg->gc_lock);
-
-		atomic_inc(&gc->pipeline_gc);
-		kref_put(&line->ref, pblk_line_put);
-	} while (1);
+			atomic_inc(&gc->pipeline_gc);
+			kref_put(&line->ref, pblk_line_put);
+		} while (1);
+	}
 }
 
 /*
@@ -396,7 +403,8 @@ void pblk_gc_free_full_lines(struct pblk *pblk)
  */
 static void pblk_gc_run(struct pblk *pblk)
 {
-	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
+	// md-bugs
+	struct pblk_line_mgmt *l_mg = &pblk->l_mg[DEFAULT_DEV_ID];
 	struct pblk_gc *gc = &pblk->gc;
 	struct pblk_line *line;
 	struct list_head *group_list;

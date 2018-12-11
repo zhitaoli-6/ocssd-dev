@@ -208,7 +208,7 @@ static int __pblk_rb_update_l2p(struct pblk_rb *rb, unsigned int to_update)
 	struct pblk_rb_entry *entry;
 	struct pblk_w_ctx *w_ctx;
 	unsigned int user_io = 0, gc_io = 0;
-	unsigned int i;
+	unsigned int i, dev_id;
 	int flags;
 
 	for (i = 0; i < to_update; i++) {
@@ -226,7 +226,8 @@ static int __pblk_rb_update_l2p(struct pblk_rb *rb, unsigned int to_update)
 		pblk_update_map_dev(pblk, w_ctx->lba, w_ctx->ppa,
 							entry->cacheline);
 
-		line = &pblk->lines[pblk_ppa_to_line(w_ctx->ppa)];
+		dev_id = pblk_get_ppa_dev_id(w_ctx->ppa);
+		line = &pblk->lines[dev_id][pblk_ppa_to_line(w_ctx->ppa)];
 		kref_put(&line->ref, pblk_line_put);
 		clean_wctx(w_ctx);
 		rb->l2p_update = (rb->l2p_update + 1) & (rb->nr_entries - 1);
@@ -554,7 +555,12 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct nvm_rq *rqd,
 				 unsigned int count)
 {
 	struct pblk *pblk = container_of(rb, struct pblk, rwb);
-	struct request_queue *q = pblk->dev->q;
+	int dev_id = pblk_get_rq_dev_id(pblk, rqd);
+	if(dev_id == -1){
+		pr_err("pblk: %s: undefined rqd dev_id\n", __func__);
+		return;
+	}
+	struct request_queue *q = pblk->devs[dev_id]->q;
 	struct pblk_c_ctx *c_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *bio = rqd->bio;
 	struct pblk_rb_entry *entry;
@@ -615,7 +621,7 @@ try:
 	}
 
 	if (pad) {
-		if (pblk_bio_add_pages(pblk, bio, GFP_KERNEL, pad)) {
+		if (pblk_bio_add_pages(pblk, bio, GFP_KERNEL, pad, dev_id)) {
 			pr_err("pblk: could not pad page in write bio\n");
 			return NVM_IO_ERR;
 		}

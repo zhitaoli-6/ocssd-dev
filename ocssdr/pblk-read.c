@@ -15,6 +15,9 @@
  * pblk-read.c - pblk's read path
  */
 
+
+// md-bugs: all bio forwarded to devs[0]
+
 #include "pblk.h"
 
 /*
@@ -47,7 +50,7 @@ static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	int nr_secs = rqd->nr_ppas;
 	bool advanced_bio = false;
 	int i, j = 0;
-    struct nvm_tgt_dev *dev = pblk->dev; //add by kan
+    struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID]; //add by kan
     struct nvm_geo *geo = &dev->geo; //add by kan
     int meta_list_idx; //add by kan
     int meta_list_mod; //add by kan
@@ -116,11 +119,11 @@ next:
 #endif
 }
 
-static int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd)
+static int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd, int dev_id)
 {
 	int err;
 
-	err = pblk_submit_io(pblk, rqd);
+	err = pblk_submit_io(pblk, rqd, dev_id);
 	if (err)
 		return NVM_IO_ERR;
 
@@ -130,10 +133,11 @@ static int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd)
 static void pblk_read_check(struct pblk *pblk, struct nvm_rq *rqd,
 			   sector_t blba)
 {
+	int dev_id = DEFAULT_DEV_ID;
 	struct pblk_sec_meta *meta_list = rqd->meta_list;
 	int nr_lbas = rqd->nr_ppas;
 	int i;
-    struct nvm_tgt_dev *dev = pblk->dev; //add by kan
+    struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID]; //add by kan
     struct nvm_geo *geo = &dev->geo; //add by kan
     int meta_list_idx; //add by kan
     int meta_list_mod; //add by kan
@@ -179,14 +183,16 @@ static void pblk_read_put_rqd_kref(struct pblk *pblk, struct nvm_rq *rqd)
 {
 	struct ppa_addr *ppa_list;
 	int i;
+	int dev_id;
 
 	ppa_list = (rqd->nr_ppas > 1) ? rqd->ppa_list : &rqd->ppa_addr;
 
 	for (i = 0; i < rqd->nr_ppas; i++) {
 		struct ppa_addr ppa = ppa_list[i];
 		struct pblk_line *line;
+		dev_id = pblk_get_ppa_dev_id(ppa);
 
-		line = &pblk->lines[pblk_ppa_to_line(ppa)];
+		line = &pblk->lines[dev_id][pblk_ppa_to_line(ppa)];
 		kref_put(&line->ref, pblk_line_put_wq);
 	}
 }
@@ -203,7 +209,8 @@ static void pblk_end_user_read(struct bio *bio)
 static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 			       bool put_line)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	int dev_id = DEFAULT_DEV_ID;
+	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *bio = rqd->bio;
 	unsigned long start_time = r_ctx->start_time;
@@ -245,6 +252,7 @@ static int pblk_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 				 unsigned int bio_init_idx,
 				 unsigned long *read_bitmap)
 {
+	int dev_id = DEFAULT_DEV_ID;
 	struct bio *new_bio, *bio = rqd->bio;
 	struct pblk_sec_meta *meta_list = rqd->meta_list;
 	struct bio_vec src_bv, dst_bv;
@@ -257,7 +265,7 @@ static int pblk_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	int i, ret, hole;
     int meta_list_idx; //add by kan
     int meta_list_mod; //add by kan
-    struct nvm_tgt_dev *dev = pblk->dev; //add by kan
+    struct nvm_tgt_dev *dev = pblk->devs[dev_id]; //add by kan
     struct nvm_geo *geo = &dev->geo; //add by kan
 
 	/* Re-use allocated memory for intermediate lbas */
@@ -267,7 +275,7 @@ static int pblk_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 
 	new_bio = bio_alloc(GFP_KERNEL, nr_holes);
 
-	if (pblk_bio_add_pages(pblk, new_bio, GFP_KERNEL, nr_holes))
+	if (pblk_bio_add_pages(pblk, new_bio, GFP_KERNEL, nr_holes, dev_id))
 		goto err;
 
 	if (nr_holes != new_bio->bi_vcnt) {
@@ -300,7 +308,7 @@ static int pblk_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 		rqd->ppa_addr = rqd->ppa_list[0];
 	}
 
-	ret = pblk_submit_io_sync(pblk, rqd);
+	ret = pblk_submit_io_sync(pblk, rqd, dev_id);
 	if (ret) {
 		bio_put(rqd->bio);
 		pr_err("pblk: sync read IO submission failed\n");
@@ -340,7 +348,8 @@ static int pblk_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	hole = find_first_zero_bit(read_bitmap, nr_secs);
 	do {
 		int line_id = pblk_ppa_to_line(rqd->ppa_list[i]);
-		struct pblk_line *line = &pblk->lines[line_id];
+		//int dev_id = pblk_get_ppa_dev_id(rqd->ppa_list[i]);
+		struct pblk_line *line = &pblk->lines[dev_id][line_id];
 
 		kref_put(&line->ref, pblk_line_put);
 
@@ -436,7 +445,8 @@ retry:
 
 int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	int dev_id = DEFAULT_DEV_ID;
+	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
 	struct request_queue *q = dev->q;
 	sector_t blba = pblk_get_lba(bio);
 	unsigned int nr_secs = pblk_get_secs(bio);
@@ -517,7 +527,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		r_ctx->private = bio;
         //printk("pblk: device read ppa=%llx nr_ppas=%d\n", rqd->ppa_addr.ppa, rqd->nr_ppas); //add by kan for debug
 
-		ret = pblk_submit_read_io(pblk, rqd);
+		ret = pblk_submit_read_io(pblk, rqd, dev_id);
 		if (ret) {
 			pr_err("pblk: read IO submission failed\n");
 			if (int_bio)
@@ -611,7 +621,8 @@ out:
 
 int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	int dev_id = DEFAULT_DEV_ID;
+	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
 	struct nvm_geo *geo = &dev->geo;
 	struct bio *bio;
 	struct nvm_rq rqd;
@@ -653,7 +664,7 @@ int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq)
 
 	data_len = (gc_rq->secs_to_gc) * geo->csecs;
 	bio = pblk_bio_map_addr(pblk, gc_rq->data, gc_rq->secs_to_gc, data_len,
-						PBLK_VMALLOC_META, GFP_KERNEL);
+						PBLK_VMALLOC_META, GFP_KERNEL, dev_id);
 	if (IS_ERR(bio)) {
 		pr_err("pblk: could not allocate GC bio (%lu)\n", PTR_ERR(bio));
 		goto err_free_dma;
@@ -667,7 +678,7 @@ int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq)
 	rqd.flags = pblk_set_read_mode(pblk, PBLK_READ_RANDOM);
 	rqd.bio = bio;
 
-	if (pblk_submit_io_sync(pblk, &rqd)) {
+	if (pblk_submit_io_sync(pblk, &rqd, dev_id)) {
 		ret = -EIO;
 		pr_err("pblk: GC read request failed\n");
 		goto err_free_bio;

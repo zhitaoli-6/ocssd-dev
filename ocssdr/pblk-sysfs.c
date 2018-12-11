@@ -22,7 +22,7 @@
 
 static ssize_t pblk_sysfs_luns_show(struct pblk *pblk, char *page)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	struct pblk_lun *rlun;
 	ssize_t sz = 0;
@@ -31,7 +31,7 @@ static ssize_t pblk_sysfs_luns_show(struct pblk *pblk, char *page)
 	for (i = 0; i < geo->all_luns; i++) {
 		int active = 1;
 
-		rlun = &pblk->luns[i];
+		rlun = &pblk->luns[DEFAULT_DEV_ID][i];
 		if (!down_trylock(&rlun->wr_sem)) {
 			active = 0;
 			up(&rlun->wr_sem);
@@ -111,7 +111,7 @@ static ssize_t pblk_sysfs_write_buffer(struct pblk *pblk, char *page)
 
 static ssize_t pblk_sysfs_ppaf(struct pblk *pblk, char *page)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	ssize_t sz = 0;
 
@@ -162,10 +162,10 @@ static ssize_t pblk_sysfs_ppaf(struct pblk *pblk, char *page)
 
 static ssize_t pblk_sysfs_lines(struct pblk *pblk, char *page)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	struct pblk_line_meta *lm = &pblk->lm;
-	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
+	struct pblk_line_mgmt *l_mg = &pblk->l_mg[DEFAULT_DEV_ID];
 	struct pblk_line *line;
 	ssize_t sz = 0;
 	int nr_free_lines;
@@ -290,7 +290,7 @@ static ssize_t pblk_sysfs_lines(struct pblk *pblk, char *page)
 
 static ssize_t pblk_sysfs_lines_info(struct pblk *pblk, char *page)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	struct pblk_line_meta *lm = &pblk->lm;
 	ssize_t sz = 0;
