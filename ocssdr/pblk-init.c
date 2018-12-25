@@ -365,7 +365,7 @@ static int pblk_core_init(struct pblk *pblk)
 	pblk->pgs_in_buffer = geo->mw_cunits * geo->all_luns * pblk->nr_dev;
 
 	pblk->min_write_pgs = geo->ws_opt * (geo->csecs / PAGE_SIZE);
-	max_write_ppas = pblk->min_write_pgs * geo->all_luns;
+	max_write_ppas = pblk->min_write_pgs * geo->all_luns * pblk->nr_dev;
 	pblk->max_write_pgs = min_t(int, max_write_ppas, NVM_MAX_VLBA);
 	pblk_set_sec_per_write(pblk, pblk->min_write_pgs);
 
@@ -374,6 +374,15 @@ static int pblk_core_init(struct pblk *pblk)
 				pblk->max_write_pgs, PBLK_MAX_REQ_ADDRS);
 		return -EINVAL;
 	}
+
+	pblk->l_mg = kcalloc(pblk->nr_dev, sizeof(struct pblk_line_mgmt), GFP_KERNEL);
+	pblk->luns = kcalloc(pblk->nr_dev, sizeof(struct pblk_luns *), GFP_KERNEL);
+	pblk->lines = kcalloc(pblk->nr_dev, sizeof(struct pblk_line *), GFP_KERNEL);
+	if(!pblk->l_mg || !pblk->luns || !pblk->lines) {
+		return -ENOMEM;
+	}
+	
+	// memory alloc/free should be paired here
 
 	pblk->pad_dist = kzalloc((pblk->min_write_pgs - 1) * sizeof(atomic64_t),
 								GFP_KERNEL);
@@ -456,6 +465,9 @@ free_page_bio_pool:
 free_global_caches:
 	pblk_free_global_caches(pblk);
 fail_free_pad_dist:
+	kfree(pblk->l_mg);
+	kfree(pblk->luns);
+	kfree(pblk->lines);
 	kfree(pblk->pad_dist);
 	return -ENOMEM;
 }
@@ -566,7 +578,7 @@ static void *pblk_bb_get_meta(struct pblk *pblk, int dev_id)
 		return ERR_PTR(-ENOMEM);
 
 	for (i = 0; i < geo->all_luns; i++) {
-		struct pblk_lun *rlun = &pblk->luns[DEFAULT_DEV_ID][i];
+		struct pblk_lun *rlun = &pblk->luns[dev_id][i];
 		u8 *meta_pos = meta + i * blk_per_lun;
 
 		ret = pblk_bb_get_tbl(dev, rlun, meta_pos, blk_per_lun);
@@ -1037,7 +1049,6 @@ static int pblk_lines_init(struct pblk *pblk)
 	struct pblk_line *line;
 	void **chunk_meta;
 	long nr_free_chks = 0;
-	long nr_lines = 0;
 	int  ret, dev_id, line_id;
 
 	ret = pblk_line_meta_init(pblk);
@@ -1116,6 +1127,13 @@ fail_free_meta:
 		pblk_line_mg_free(pblk, dev_id);
 
 	return ret;
+}
+
+
+static int pblk_scheduler_init(struct pblk *pblk){
+	// md-todo
+	pblk->sche_meta.last_dev_id = -1;
+	return 0;
 }
 
 static int pblk_writer_init(struct pblk *pblk)
@@ -1208,7 +1226,13 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	int ret;
 
 
-	pr_info("pblk: OCSSD version %d\n", geo->version);
+	pr_info("pblk: dev[0] OCSSD version %d\n", geo->version);
+	ret = pblk_check_geos(devs, nr_dev);
+	if(ret){
+		pr_err("pblk: different MD GEOs not supported\n");
+		return ERR_PTR(-EINVAL);
+	}
+	pr_info("pblk: pass MD geo check\n");
 
 	/* pblk supports 1.2 and 2.0 versions */
 	if (!(geo->version == NVM_OCSSD_SPEC_12 ||
@@ -1268,13 +1292,6 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	}
 	pr_info("pblk: done pblk_core_init\n");
 
-	pblk->l_mg = kcalloc(pblk->nr_dev, sizeof(struct pblk_line_mgmt), GFP_KERNEL);
-	pblk->luns = kcalloc(pblk->nr_dev, sizeof(struct pblk_luns *), GFP_KERNEL);
-	pblk->lines = kcalloc(pblk->nr_dev, sizeof(struct pblk_line *), GFP_KERNEL);
-	if(!pblk->l_mg || !pblk->luns || !pblk->lines) {
-		ret = -ENOMEM;
-		return ret;
-	}
 	ret = pblk_lines_init(pblk);
 	if (ret) {
 		pr_err("pblk: could not initialize lines\n");
@@ -1289,8 +1306,9 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	}
 	pr_info("pblk: done pblk_rwb_init\n");
 
-    if(flags & NVM_TARGET_FACTORY) //add by kan for debug 
+    if(flags & NVM_TARGET_FACTORY) {   //add by kan for debug 
         printk("pblk: target factory\n"); //add by kan for debug
+	}
 
 	ret = pblk_l2p_init(pblk, flags & NVM_TARGET_FACTORY);
 	if (ret) {
@@ -1298,6 +1316,13 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 		goto fail_free_rwb;
 	}
 	pr_info("pblk: done pblk_l2p_init\n");
+
+	ret = pblk_scheduler_init(pblk);
+	if (ret) {
+		pr_err("pblk: could not initialize scheduler\n");
+		goto fail_free_rwb;
+	}
+	pr_info("pblk: done pblk_scheduler_init\n");
 
 	ret = pblk_writer_init(pblk);
 	if (ret) {
@@ -1312,8 +1337,7 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 		pr_err("pblk: could not initialize gc\n");
 		goto fail_stop_writer;
 	}
-	pr_info("pblk: done pblk_gc_init\n");
-
+	pr_info("pblk: done pblk_gc_init\n"); 
 	/* inherit the size from the underlying device */
 	blk_queue_logical_block_size(tqueue, queue_physical_block_size(bqueue));
 	blk_queue_max_hw_sectors(tqueue, queue_max_hw_sectors(bqueue));
@@ -1352,8 +1376,6 @@ fail_free_rwb:
 fail_free_lines:
 	pblk_lines_free(pblk);
 fail_free_core:
-	kfree(pblk->l_mg);
-	kfree(pblk->luns);
 	pblk_core_free(pblk);
 fail:
 	kfree(pblk);

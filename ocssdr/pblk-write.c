@@ -81,7 +81,7 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 	dev_id = pblk_get_rq_dev_id(pblk, rqd);
 	WARN_ON(dev_id == -1);
 	if(dev_id == -1){
-		pr_err("pblk: rqd undefined dev\n", __func__);
+		pr_err("pblk: %s rqd undefined dev\n", __func__);
 		return;
 	}
 
@@ -147,6 +147,7 @@ static void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
 		}
 
 		ppa = ppa_list[bit];
+		// bugs: return NULL, marked by zhitao
 		entry = pblk_rb_sync_scan_entry(&pblk->rwb, &ppa);
 		if (!entry) {
 			pr_err("pblk: could not scan entry on write failure\n");
@@ -358,6 +359,7 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 	bio->bi_iter.bi_sector = 0; /* internal bio */
 	bio_set_op_attrs(bio, REQ_OP_WRITE, 0);
 	rqd->bio = bio;
+	rqd->dev = dev;
 
 	ret = pblk_alloc_w_rq(pblk, rqd, rq_ppas, pblk_end_io_write_meta, dev_id);
 	if (ret)
@@ -462,6 +464,13 @@ retry:
 	return meta_line;
 }
 
+static int pblk_schedule_write(struct pblk *pblk){
+	int dev_id;
+	dev_id = DEFAULT_DEV_ID;
+	//dev_id = (pblk->dev_id + 1) % pblk->nr_dev;
+	return dev_id;
+}
+
 static int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd, int dev_id)
 {
 	struct ppa_addr erase_ppa;
@@ -560,7 +569,7 @@ static int pblk_submit_write(struct pblk *pblk)
 	rqd->bio = bio;
 	
 	// md-bugs: select one device
-	dev_id = DEFAULT_DEV_ID;
+	dev_id = pblk_schedule_write(pblk);
 	rqd->dev = pblk->devs[dev_id];
 
 	if (pblk_rb_read_to_bio(&pblk->rwb, rqd, pos, secs_to_sync,

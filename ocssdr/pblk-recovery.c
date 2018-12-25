@@ -22,6 +22,7 @@
 
 void pblk_submit_rec(struct work_struct *work)
 {
+	
 	struct pblk_rec_ctx *recovery =
 			container_of(work, struct pblk_rec_ctx, ws_rec);
 	struct pblk *pblk = recovery->pblk;
@@ -31,6 +32,7 @@ void pblk_submit_rec(struct work_struct *work)
 	unsigned int nr_rec_secs;
 	unsigned int pgs_read;
 	int ret;
+	pr_err("pblk rec: func(%s) bug here, never be called in this version\n", __func__);
 
 	nr_rec_secs = bitmap_weight((unsigned long int *)&rqd->ppa_status,
 								NVM_MAX_VLBA);
@@ -58,6 +60,7 @@ void pblk_submit_rec(struct work_struct *work)
 	atomic_long_add(nr_rec_secs, &pblk->recov_writes);
 #endif
 
+	rqd->dev = pblk->devs[DEFAULT_DEV_ID];
 	ret = pblk_submit_io(pblk, rqd, DEFAULT_DEV_ID);
 	if (ret) {
 		pr_err("pblk: I/O submission failed: %d\n", ret);
@@ -79,6 +82,7 @@ int pblk_recov_setup_rq(struct pblk *pblk, struct pblk_c_ctx *c_ctx,
 	struct nvm_rq *rec_rqd;
 	struct pblk_c_ctx *rec_ctx;
 	int nr_entries = c_ctx->nr_valid + c_ctx->nr_padded;
+	pr_info("pblk rec: func(%s) called here, warning\n", __func__);
 
 	rec_rqd = pblk_alloc_rqd(pblk, PBLK_WRITE);
 	rec_ctx = nvm_rq_to_pdu(rec_rqd);
@@ -281,6 +285,7 @@ next_read_rq:
 				addr_to_gen_ppa(pblk, r_ptr_int, line->id);
 	}
 
+	rqd->dev = dev;
 	/* If read fails, more padding is needed */
 	ret = pblk_submit_io_sync(pblk, rqd, DEFAULT_DEV_ID);
 	if (ret) {
@@ -341,7 +346,8 @@ static void pblk_end_io_recov(struct nvm_rq *rqd)
 static int pblk_recov_pad_oob(struct pblk *pblk, struct pblk_line *line,
 			      int left_ppas)
 {
-	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
+	int dev_id = line->dev_id;
+	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
 	struct nvm_geo *geo = &dev->geo;
 	struct ppa_addr *ppa_list;
 	struct pblk_sec_meta *meta_list;
@@ -399,7 +405,7 @@ next_pad_rq:
 	dma_ppa_list = dma_meta_list + pblk_dma_meta_size;
 
 	bio = pblk_bio_map_addr(pblk, data, rq_ppas, rq_len,
-						PBLK_VMALLOC_META, GFP_KERNEL, DEFAULT_DEV_ID);
+						PBLK_VMALLOC_META, GFP_KERNEL, dev_id);
 	if (IS_ERR(bio)) {
 		ret = PTR_ERR(bio);
 		goto fail_free_meta;
@@ -420,6 +426,7 @@ next_pad_rq:
 	rqd->dma_meta_list = dma_meta_list;
 	rqd->end_io = pblk_end_io_recov;
 	rqd->private = pad_rq;
+	rqd->dev = dev;
 
 
 	
@@ -454,12 +461,12 @@ next_pad_rq:
 	}
 
 	kref_get(&pad_rq->ref);
-	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas, DEFAULT_DEV_ID);
+	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas, dev_id);
 
-	ret = pblk_submit_io(pblk, rqd, DEFAULT_DEV_ID);
+	ret = pblk_submit_io(pblk, rqd, dev_id);
 	if (ret) {
 		pr_err("pblk: I/O submission failed: %d\n", ret);
-		pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas, DEFAULT_DEV_ID);
+		pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas, dev_id);
 		goto fail_free_bio;
 	}
 
@@ -939,6 +946,7 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 	int i, valid_uuid = 0;
 	LIST_HEAD(recov_list);
 
+	pr_err("pblk rec: func(%s) bug here, never be called in this version\n", __func__);
 	/* TODO: Implement FTL snapshot */
 
 	/* Scan recovery - takes place when FTL snapshot fails */
@@ -1111,12 +1119,13 @@ out:
 /*
  * Pad current line
  */
-int pblk_recov_pad(struct pblk *pblk)
+int pblk_recov_pad(struct pblk *pblk, int dev_id)
 {
 	struct pblk_line *line;
-	struct pblk_line_mgmt *l_mg = &pblk->l_mg[DEFAULT_DEV_ID];
+	struct pblk_line_mgmt *l_mg = &pblk->l_mg[dev_id];
 	int left_msecs;
 	int ret = 0;
+	pr_info("pblk rec: func(%s) called here, warning\n", __func__);
 
 	spin_lock(&l_mg->free_lock);
 	line = l_mg->data_line;

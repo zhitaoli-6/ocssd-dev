@@ -34,6 +34,10 @@ static LIST_HEAD(nvm_tgt_types);
 static DECLARE_RWSEM(nvm_tgtt_lock);
 static LIST_HEAD(nvm_devices);
 static DECLARE_RWSEM(nvm_lock);
+// all pblk_tgts
+static LIST_HEAD(pblk_targets_list);
+static DECLARE_RWSEM(pblk_lock);
+// all ocssdr_tgts
 static LIST_HEAD(ocssdr_targets_list);
 static DECLARE_RWSEM(ocssdr_lock);
 
@@ -49,49 +53,34 @@ struct nvm_dev_map {
 	int num_ch;
 };
 
-static struct nvm_target *nvm_find_target(struct nvm_dev *dev, const char *name)
+
+static struct nvm_target *nvm_find_pblk_target(const char *name, int lock) 
 {
-	struct nvm_target *tgt;
+	struct nvm_target *tgt = NULL, *tmp = NULL;
 
-	list_for_each_entry(tgt, &dev->targets, list)
-		if (!strcmp(name, tgt->disk->disk_name))
-			return tgt;
-
-	return NULL;
-}
-
-static bool nvm_target_exists(const char *name)
-{
-	struct nvm_dev *dev;
-	struct nvm_target *tgt;
-	bool ret = false;
-
-	down_write(&nvm_lock);
-	list_for_each_entry(dev, &nvm_devices, devices) {
-		mutex_lock(&dev->mlock);
-		list_for_each_entry(tgt, &dev->targets, list) {
-			if (!strcmp(name, tgt->disk->disk_name)) {
-				ret = true;
-				mutex_unlock(&dev->mlock);
-				goto out;
-			}
+	if (lock)
+		down_write(&pblk_lock);
+	list_for_each_entry(tmp, &pblk_targets_list, list) {
+		if (!strcmp(name, tmp->disk->disk_name)) {
+			tgt = tmp;
+			break;
 		}
-		mutex_unlock(&dev->mlock);
 	}
-
-out:
-	up_write(&nvm_lock);
-	return ret;
+	if(lock)
+		up_write(&pblk_lock);
+	return tgt;
 }
 
-static struct nvm_md_target *ocssdr_find_target(const char *name, int lock){
+
+static struct nvm_md_target *nvm_find_ocssdr_target(const char *name, int lock)
+{
 	struct nvm_md_target *tmp, *tgt= NULL;
 	
 	if (lock)
 		down_write(&ocssdr_lock);
 
 	list_for_each_entry(tmp, &ocssdr_targets_list, list){
-		if(!strcmp(name, tmp->disk->disk_name)){
+		if (!strcmp(name, tmp->disk->disk_name)) {
 			tgt = tmp;
 			break;
 		}
@@ -101,6 +90,32 @@ static struct nvm_md_target *ocssdr_find_target(const char *name, int lock){
 		up_write(&ocssdr_lock);
 	return tgt;
 }
+
+static bool nvm_target_exists(const char *name)
+{
+	void *tgt = NULL;
+	bool ret = false;
+
+	down_write(&nvm_lock);
+
+	tgt = nvm_find_pblk_target(name, 1);
+	if (tgt) {
+		ret = true;
+		pr_info("nvm: find tgt %s as pblk\n", name);
+		goto out;
+	}
+	tgt = nvm_find_ocssdr_target(name, 1);
+	if (tgt)  {
+		ret = true;
+		pr_info("nvm: find tgt %s as ocssdr\n", name);
+	}
+
+out:
+	up_write(&nvm_lock);
+	return ret;
+}
+
+
 
 static int nvm_reserve_luns(struct nvm_dev *dev, int lun_begin, int lun_end)
 {
@@ -338,21 +353,21 @@ static int __nvm_config_extended(struct nvm_dev *dev,
 	return nvm_config_check_luns(&dev->geo, e->lun_begin, e->lun_end);
 }
 
-static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
+static int nvm_create_pblk_tgt(struct nvm_dev **dev, int nr_dev, struct nvm_ioctl_create *create)
 {
 	struct nvm_ioctl_create_extended e;
 	struct request_queue *tqueue;
 	struct gendisk *tdisk;
 	struct nvm_tgt_type *tt;
 	struct nvm_target *t;
-	struct nvm_tgt_dev *tgt_dev;
 	struct nvm_tgt_dev **tgt_dev_arr;
 	void *targetdata;
 	int ret;
+	int i;
 
 	switch (create->conf.type) {
 	case NVM_CONFIG_TYPE_SIMPLE:
-		ret = __nvm_config_simple(dev, &create->conf.s);
+		ret = __nvm_config_simple(dev[0], &create->conf.s);
 		if (ret)
 			return ret;
 
@@ -361,7 +376,7 @@ static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 		e.op = NVM_TARGET_DEFAULT_OP;
 		break;
 	case NVM_CONFIG_TYPE_EXTENDED:
-		ret = __nvm_config_extended(dev, &create->conf.e);
+		ret = __nvm_config_extended(dev[0], &create->conf.e);
 		if (ret)
 			return ret;
 
@@ -384,9 +399,11 @@ static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 		return -EINVAL;
 	}
 
-	ret = nvm_reserve_luns(dev, e.lun_begin, e.lun_end);
-	if (ret)
-		return ret;
+	for(i = 0; i < nr_dev; i++) {
+		ret = nvm_reserve_luns(dev[i], e.lun_begin, e.lun_end);
+		if (ret)
+			return ret;
+	}
 
 	t = kmalloc(sizeof(struct nvm_target), GFP_KERNEL);
 	if (!t) {
@@ -394,19 +411,19 @@ static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 		goto err_reserve;
 	}
 
-	tgt_dev = nvm_create_tgt_dev(dev, e.lun_begin, e.lun_end, e.op);
-	if (!tgt_dev) {
-		pr_err("nvm: could not create target device\n");
+	tgt_dev_arr = kcalloc(nr_dev, sizeof(struct nvm_tgt_dev *), GFP_KERNEL);
+	if(!tgt_dev_arr) {
 		ret = -ENOMEM;
 		goto err_t;
 	}
-	tgt_dev_arr = kmalloc(sizeof(struct nvm_tgt_dev *), GFP_KERNEL);
-	if(!tgt_dev_arr){
-		ret = -ENOMEM;
-		goto err_dev;
+	for(i = 0; i < nr_dev; i++) {
+		tgt_dev_arr[i] = nvm_create_tgt_dev(dev[i], e.lun_begin, e.lun_end, e.op);
+		if (!tgt_dev_arr[i]) {
+			pr_err("nvm: could not create target device %d/%d devices\n", i, nr_dev);
+			ret = -ENOMEM;
+			goto err_dev;
+		}
 	}
-	tgt_dev_arr[0] = tgt_dev;
-	
 
 	tdisk = alloc_disk(0);
 	if (!tdisk) {
@@ -414,7 +431,8 @@ static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 		goto err_dev;
 	}
 
-	tqueue = blk_alloc_queue_node(GFP_KERNEL, dev->q->node, NULL);
+	tqueue = blk_alloc_queue(GFP_KERNEL);
+	//tqueue = blk_alloc_queue_node(GFP_KERNEL, dev->q->node, NULL);
 	if (!tqueue) {
 		ret = -ENOMEM;
 		goto err_disk;
@@ -429,7 +447,7 @@ static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 	tdisk->queue = tqueue;
 
 	pr_info("nvm: pblk tgt %s init start\n", create->tgtname);
-	targetdata = tt->init(tgt_dev_arr, 1, tdisk, create->flags);
+	targetdata = tt->init(tgt_dev_arr, nr_dev, tdisk, create->flags);
 	if (IS_ERR(targetdata)) {
 		ret = PTR_ERR(targetdata);
 		goto err_init;
@@ -440,7 +458,7 @@ static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 	tqueue->queuedata = targetdata;
 
 	blk_queue_max_hw_sectors(tqueue,
-			(dev->geo.csecs >> 9) * NVM_MAX_VLBA);
+			(dev[0]->geo.csecs >> 9) * NVM_MAX_VLBA);
 
 	set_capacity(tdisk, tt->capacity(targetdata));
 	add_disk(tdisk);
@@ -450,13 +468,17 @@ static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 		goto err_sysfs;
 	}
 
+	t->nr_dev = nr_dev;
+	t->dev = tgt_dev_arr;
 	t->type = tt;
 	t->disk = tdisk;
-	t->dev = tgt_dev;
 
-	mutex_lock(&dev->mlock);
-	list_add_tail(&t->list, &dev->targets);
-	mutex_unlock(&dev->mlock);
+	//mutex_lock(&dev->mlock);
+	//list_add_tail(&t->list, &dev->targets);
+	//mutex_unlock(&dev->mlock);
+	down_write(&pblk_lock);
+	list_add_tail(&t->list, &pblk_targets_list);
+	up_write(&pblk_lock);
 
 	__module_get(tt->owner);
 
@@ -470,14 +492,19 @@ err_init:
 err_disk:
 	put_disk(tdisk);
 err_dev:
-	nvm_remove_tgt_dev(tgt_dev, 0);
+	for(i = 0; i < nr_dev; i++)
+		if(tgt_dev_arr[i])
+			nvm_remove_tgt_dev(tgt_dev_arr[i], 0);
+	kfree(tgt_dev_arr);
 err_t:
 	kfree(t);
 err_reserve:
-	nvm_release_luns_err(dev, e.lun_begin, e.lun_end);
+	for(i = 0; i < nr_dev; i++)
+		nvm_release_luns_err(dev[i], e.lun_begin, e.lun_end);
 	return ret;
 }
-static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], struct nvm_ioctl_create *create){
+
+static int nvm_create_ocssdr_tgt(struct nvm_dev **dev, char *tgtname[], int nr_dev, struct nvm_ioctl_create *create) {
 	struct request_queue *tqueue;
 	struct gendisk *tdisk;
 	struct nvm_tgt_type *tt;
@@ -494,9 +521,7 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 	}
 	//pr_info("nvm: ocssdr find type\n");
 	
-	// find ocssdr target, expect it does not exist
-	oc_t = ocssdr_find_target(create->tgtname, 1);
-	if(oc_t){
+	if (nvm_target_exists(create->tgtname)) {
 		pr_err("nvm: ocssdr target name %s already exists.\n", create->tgtname);
 		return -EINVAL;
 	}
@@ -509,18 +534,16 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 	t = oc_t->child_targets;
 	pr_info("nvm: now to check existence of ocssdr child targets \n");
 	//  find sub pblk targets, expect they all exist
-	for(i = 0; i < devcnt; i++){
-		mutex_lock(&dev[i]->mlock);
-		t[i] = nvm_find_target(dev[i], tgtname[i]);
-		if(!t[i]){
+	for(i = 0; i < nr_dev; i++){
+		t[i] = nvm_find_pblk_target(tgtname[i], 1);
+		if (!t[i]) {
 			mutex_unlock(&dev[i]->mlock);
 			pr_err("nvm: ocssdr sub-target name %s does not exist.\n", tgtname[i]);
 			return -EINVAL;
 		}
-		mutex_unlock(&dev[i]->mlock);
 	}
 
-	pr_info("nvm: ocssdr child targets check PASS\n", devcnt);
+	pr_info("nvm: ocssdr child targets check PASS\n", nr_dev);
 	tdisk = alloc_disk(0);
 	if (!tdisk) {
 		ret = -ENOMEM;
@@ -543,7 +566,7 @@ static int nvm_create_ocssdr(int devcnt, struct nvm_dev **dev, char *tgtname[], 
 	tdisk->fops = &nvm_fops;
 	tdisk->queue = tqueue;
 
-	targetdata = tt->minit(devcnt, t, tdisk, create->flags);
+	targetdata = tt->minit(nr_dev, t, tdisk, create->flags);
 	if (IS_ERR(targetdata)) {
 		pr_info("nvm: target type %s minit fn err\n", create->tgttype);
 		ret = PTR_ERR(targetdata);
@@ -592,6 +615,7 @@ static void __nvm_remove_target(struct nvm_target *t)
 	struct nvm_tgt_type *tt = t->type;
 	struct gendisk *tdisk = t->disk;
 	struct request_queue *q = tdisk->queue;
+	int i;
 
 	del_gendisk(tdisk);
 	blk_cleanup_queue(q);
@@ -602,11 +626,13 @@ static void __nvm_remove_target(struct nvm_target *t)
 	if (tt->exit)
 		tt->exit(tdisk->private_data);
 
-	nvm_remove_tgt_dev(t->dev, 1);
+	for(i = 0; i < t->nr_dev; i++)
+		nvm_remove_tgt_dev(t->dev[i], 1);
 	put_disk(tdisk);
 	module_put(t->type->owner);
 
 	list_del(&t->list);
+	kfree(t->dev);
 	kfree(t);
 }
 
@@ -620,23 +646,33 @@ static void __nvm_remove_target(struct nvm_target *t)
  * 1: on not found
  * <0: on error
  */
-static int nvm_remove_tgt(struct nvm_dev *dev, struct nvm_ioctl_remove *remove)
+static int __nvm_remove_pblk_tgt(struct nvm_target *t)
 {
-	struct nvm_target *t;
-
-	mutex_lock(&dev->mlock);
-	t = nvm_find_target(dev, remove->tgtname);
-	if (!t) {
-		mutex_unlock(&dev->mlock);
-		return 1;
-	}
+	down_write(&pblk_lock);
 	__nvm_remove_target(t);
-	mutex_unlock(&dev->mlock);
-
+	up_write(&pblk_lock);
 	return 0;
 }
 
-static int __nvm_remove_mdt(struct nvm_md_target *t){
+
+/** Remove a pblk target
+ * Returns:
+ * 0: on success
+ * 1: on not found
+ * <0: on error
+ */
+static int nvm_remove_pblk_tgt(struct nvm_ioctl_remove *remove) 
+{
+	struct nvm_target *tgt;
+	int ret = 1;
+	tgt = nvm_find_pblk_target(remove->tgtname, 1);
+	if (tgt) {
+		return __nvm_remove_pblk_tgt(tgt);
+	}
+	return ret;
+}
+
+static int __nvm_remove_ocssdr_tgt(struct nvm_md_target *t){
 	struct nvm_tgt_type *tt = t->type;
 	struct gendisk *tdisk = t->disk;
 	struct request_queue *q = tdisk->queue;
@@ -658,39 +694,36 @@ static int __nvm_remove_mdt(struct nvm_md_target *t){
 	return 0;
 }
 
-static int nvm_remove_md_tgt(struct nvm_ioctl_remove *remove){
-	struct nvm_md_target* tmp;
+static int nvm_remove_ocssdr_tgt(struct nvm_ioctl_remove *remove)
+{
+	struct nvm_md_target* md_tgt;
 	struct nvm_target *child_target;
-	struct nvm_dev *child_dev;
 	int ret = 1;
 	int i;
 	
-	pr_info("nvm: begin to find ocssdr target %s\n", remove->tgtname);
-	down_write(&ocssdr_lock);
-	list_for_each_entry(tmp, &ocssdr_targets_list, list){
-		if(!strcmp(remove->tgtname, tmp->disk->disk_name)){
-			pr_info("nvm: found ocssdr target %s\n", remove->tgtname);
-			for(i = 0; i < OCSSDR_MAX_DEVICES_CNT; i++){
-				child_target = tmp->child_targets[i];
-				if(!child_target)
-					break;
-				pr_info("nvm: begin remove ocssdr child target %s\n", child_target->disk->disk_name);
-				child_dev = child_target->dev->parent;
-				strcpy(remove->tgtname, child_target->disk->disk_name);
-				ret = nvm_remove_tgt(child_dev, remove);
-				if(ret){
-					pr_info("nvm: corrupted ocssdr child target %s\n", child_target->disk->disk_name);
-					up_write(&ocssdr_lock);
-					return ret;
-				}
-			}
-			pr_info("nvm: remove total %d ocssdr child targets\n", i);
-			ret = __nvm_remove_mdt(tmp);
-			//list_del(&tmp->list);
+	pr_info("nvm: try to remove ocssdr target %s\n", remove->tgtname);
+	
+	md_tgt = nvm_find_ocssdr_target(remove->tgtname, 1);
+	if (!md_tgt) {
+		pr_info("nvm: not found ocssdr target %s\n", remove->tgtname);
+		return ret;
+	}
+	for(i = 0; i < OCSSDR_MAX_DEVICES_CNT; i++){
+		child_target = md_tgt->child_targets[i];
+		if (!child_target)
 			break;
+		pr_info("nvm: begin remove ocssdr child target %s\n", child_target->disk->disk_name);
+		ret = __nvm_remove_pblk_tgt(child_target);
+		if(ret){
+			pr_info("nvm: corrupted ocssdr child target %s\n", child_target->disk->disk_name);
+			up_write(&ocssdr_lock);
+			return ret;
 		}
 	}
-	up_write(&ocssdr_lock);
+
+	pr_info("nvm: remove %d ocssdr child targets totally, now to remove ocssdr\n", i);
+	ret = __nvm_remove_ocssdr_tgt(md_tgt);
+
 	return ret;
 }
 
@@ -1158,9 +1191,11 @@ void nvm_unregister(struct nvm_dev *dev)
 {
 	struct nvm_target *t, *tmp;
 
+	pr_err("nvm: unregister left target dirty(future work)\n");
+
 	mutex_lock(&dev->mlock);
 	list_for_each_entry_safe(t, tmp, &dev->targets, list) {
-		if (t->dev->parent != dev)
+		if (t->dev[0]->parent != dev)
 			continue;
 		__nvm_remove_target(t);
 	}
@@ -1181,37 +1216,18 @@ static int __nvm_configure_create(struct nvm_ioctl_create *create)
 	char *devname[OCSSDR_MAX_DEVICES_CNT];
 	char *tgtname[OCSSDR_MAX_DEVICES_CNT];
 	char tgttype[NVM_TTYPE_NAME_MAX];
-	int devcnt, i;
+	int nr_dev, i;
 	int len;
 	int ret = 0;
 	/* create->devname will be changed by parse algorithm */
-	devcnt = parse_by_delimiter(create->dev, ',', devname, OCSSDR_MAX_DEVICES_CNT);
-	if(!devcnt){
+	nr_dev = parse_by_delimiter(create->dev, ',', devname, OCSSDR_MAX_DEVICES_CNT);
+	if(!nr_dev) {
 		pr_err("nvm: no valid devices given\n");
 		return -EINVAL;
 	}
-	pr_info("nvm: %d devices got", devcnt);
-	for(i = 0; i < devcnt; i++){
-		tgtname[i] = kmalloc(DISK_NAME_LEN, GFP_KERNEL);
-		if(!tgtname[i]){
-			i--;
-			while(i >= 0 && tgtname[i]){
-				kfree(tgtname[i]);
-				i--;
-			}
-			return -ENOMEM;
-		}
-	}
-	strcpy(tgttype, create->tgttype);
-	strcpy(create->tgttype, "pblk");
-	/*
-	pr_info("nvm: %d devices got: ", devcnt);
-	for(i = 0; i < devcnt; i++) 
-		pr_info("%s ", devname[i]);
-	pr_info("\n");
-	*/
-	for(i = 0; i < devcnt; i++){
-		pr_info("nvm: begin create %d-th tgt\n", i);
+	pr_info("nvm: %d devices got", nr_dev);
+
+	for(i = 0; i < nr_dev; i++) {
 		down_write(&nvm_lock);
 		dev[i] = nvm_find_nvm_dev(devname[i]);
 		up_write(&nvm_lock);
@@ -1219,29 +1235,51 @@ static int __nvm_configure_create(struct nvm_ioctl_create *create)
 			pr_err("nvm: device %s not found\n", devname[i]);
 			return -EINVAL;
 		}
-		len = strlen(create->tgtname);
-		if(i > 0) len--;
-		create->tgtname[len] = '0' + i;
-		create->tgtname[len + 1] = '\0';
-		strncpy(tgtname[i], create->tgtname, len + 2);
-		ret = nvm_create_tgt(dev[i], create);
-		pr_info("nvm: create target %s ret %d\n", create->tgtname, ret);
-		if(ret)
-			goto end;
 	}
-	strcpy(create->tgttype, tgttype);
-	if(strcmp(create->tgttype, "ocssdr") == 0){
-		len = strlen(create->tgtname);
-		create->tgtname[len-1] = 'r';
-		for(i = 0; i < len; i++)
-			create->tgtname[i] -= 'a' - 'A';
+	pr_info("nvm: devices existence check PASS\n");
 
-		//strcpy(create->tgttype, "ocssdr");
-		ret = nvm_create_ocssdr(devcnt, dev, tgtname, create);
+	for(i = 0; i < nr_dev; i++) {
+		tgtname[i] = kmalloc(DISK_NAME_LEN, GFP_KERNEL);
+		if(!tgtname[i]) {
+			for(i--; i >= 0 && tgtname[i]; i--)
+				kfree(tgtname[i]);
+			pr_err("nvm: tgtname memory allocation failed\n");
+			return -ENOMEM;
+		}
 	}
-
+	// only pblk/ocssdr target type supported now, which is checked before
+	if (strcmp(create->tgttype, "ocssdr") == 0) {
+		// to create an ocssdr target
+		strcpy(tgttype, "ocssdr");
+		strcpy(create->tgttype, "pblk");
+		for(i = 0; i < nr_dev; i++){
+			pr_info("nvm: begin create %d-th tgt\n", i);
+			len = strlen(create->tgtname);
+			if(i > 0) len--;
+			create->tgtname[len] = '0' + i;
+			create->tgtname[len + 1] = '\0';
+			strncpy(tgtname[i], create->tgtname, len + 2);
+			ret = nvm_create_pblk_tgt(&dev[i], 1, create);
+			pr_info("nvm: create target %s ret %d\n", create->tgtname, ret);
+			if(ret)
+				goto end;
+		}
+		strcpy(create->tgttype, tgttype);
+		if(strcmp(create->tgttype, "ocssdr") == 0){
+			len = strlen(create->tgtname);
+			create->tgtname[len-1] = 'r';
+			for(i = 0; i < len; i++) 
+				create->tgtname[i] -= 'a' - 'A';
+			ret = nvm_create_ocssdr_tgt(dev, tgtname, nr_dev, create);
+		}
+	} else if (strcmp(create->tgttype, "pblk") == 0) {
+		ret = nvm_create_pblk_tgt(dev, nr_dev, create);
+	} else {
+		pr_err("nvm: not valid tgt type: %s\n", create->tgttype);
+		ret = -EINVAL;
+	}
 end:
-	for(i = 0; i < devcnt; i++)
+	for(i = 0; i < nr_dev; i++)
 		if(tgtname[i])
 			kfree(tgtname[i]);
 	return ret;
@@ -1366,10 +1404,10 @@ static long nvm_ioctl_dev_create(struct file *file, void __user *arg)
 	return __nvm_configure_create(&create);
 }
 
+// remove as pblk at first, otherwise remove as ocssdr
 static long nvm_ioctl_dev_remove(struct file *file, void __user *arg)
 {
 	struct nvm_ioctl_remove remove;
-	struct nvm_dev *dev;
 	int ret = 0;
 
 	if (copy_from_user(&remove, arg, sizeof(struct nvm_ioctl_remove)))
@@ -1382,14 +1420,10 @@ static long nvm_ioctl_dev_remove(struct file *file, void __user *arg)
 		return -EINVAL;
 	}
 
-	list_for_each_entry(dev, &nvm_devices, devices) {
-		ret = nvm_remove_tgt(dev, &remove);
-		if (!ret)
-			break;
-	}
+	ret = nvm_remove_pblk_tgt(&remove);
 
 	if(ret) 
-		ret = nvm_remove_md_tgt(&remove);
+		ret = nvm_remove_ocssdr_tgt(&remove);
 	return ret;
 }
 

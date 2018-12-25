@@ -133,7 +133,6 @@ static int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd, int dev_id
 static void pblk_read_check(struct pblk *pblk, struct nvm_rq *rqd,
 			   sector_t blba)
 {
-	int dev_id = DEFAULT_DEV_ID;
 	struct pblk_sec_meta *meta_list = rqd->meta_list;
 	int nr_lbas = rqd->nr_ppas;
 	int i;
@@ -174,7 +173,7 @@ static void pblk_read_check(struct pblk *pblk, struct nvm_rq *rqd,
 			continue;
 
         if (lba != blba + i)
-            printk("pblk: lba = %llx blba =%llx ppa=%llx\n", lba, blba + i, p.ppa);    
+            printk("pblk: lba = %llx blba =%lx ppa=%llx\n", lba, blba + i, p.ppa);    
 		WARN(lba != blba + i, "pblk: corrupted read LBA\n");
 	}
 }
@@ -209,11 +208,14 @@ static void pblk_end_user_read(struct bio *bio)
 static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 			       bool put_line)
 {
-	int dev_id = DEFAULT_DEV_ID;
-	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
+	struct nvm_tgt_dev *dev = rqd->dev;
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *bio = rqd->bio;
 	unsigned long start_time = r_ctx->start_time;
+	if(!dev){
+		pr_err("pblk: %s rqd undefined dev\n", __func__);
+		dev = pblk->devs[DEFAULT_DEV_ID];
+	}
 
 	generic_end_io_acct(dev->q, READ, &pblk->disk->part0, start_time);
 	if (rqd->error)
@@ -569,6 +571,7 @@ static int read_ppalist_rq_gc(struct pblk *pblk, struct nvm_rq *rqd,
 			continue;
 
 		ppa_gc = addr_to_gen_ppa(pblk, paddr_list_gc[i], line->id);
+		ppa_gc = pblk_set_ppa_dev_id(ppa_gc, line->dev_id);
 		if (!pblk_ppa_comp(ppa_list_l2p[i], ppa_gc)) {
 			paddr_list_gc[i] = lba_list[i] = ADDR_EMPTY;
 			continue;
@@ -605,6 +608,7 @@ static int read_rq_gc(struct pblk *pblk, struct nvm_rq *rqd,
 	spin_unlock(&pblk->trans_lock);
 
 	ppa_gc = addr_to_gen_ppa(pblk, paddr_gc, line->id);
+	ppa_gc = pblk_set_ppa_dev_id(ppa_gc, line->dev_id);
 	if (!pblk_ppa_comp(ppa_l2p, ppa_gc))
 		goto out;
 

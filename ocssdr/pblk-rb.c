@@ -558,7 +558,7 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct nvm_rq *rqd,
 	int dev_id = pblk_get_rq_dev_id(pblk, rqd);
 	if(dev_id == -1){
 		pr_err("pblk: %s: undefined rqd dev_id\n", __func__);
-		return;
+		return NVM_IO_ERR;
 	}
 	struct request_queue *q = pblk->devs[dev_id]->q;
 	struct pblk_c_ctx *c_ctx = nvm_rq_to_pdu(rqd);

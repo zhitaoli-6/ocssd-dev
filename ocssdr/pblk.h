@@ -565,6 +565,27 @@ struct pblk_line_meta {
 };
 
 enum {
+	PBLK_DEVSTATE_NEW = 0,
+	PBLK_DEVSTATE_FREE = 1,
+	PBLK_DEVSTATE_BUSY = 2,
+};
+
+struct pblk_dev_perf_info {
+	int dev_state;
+	unsigned int sche_io;
+};
+
+struct pblk_dev_age_info {
+	int wi; // wear-levelling index
+};
+
+struct pblk_schedule_meta {
+	struct pblk_dev_perf_info *perf_info;
+	struct pblk_dev_age_info *age_info;
+	int last_dev_id;
+};
+
+enum {
 	PBLK_STATE_RUNNING = 0,
 	PBLK_STATE_STOPPING = 1,
 	PBLK_STATE_RECOVERING = 2,
@@ -596,6 +617,7 @@ struct pblk {
 	struct pblk_line **lines;		/* Line array */
 	struct pblk_line_mgmt *l_mg;		/* Line management */
 	struct pblk_line_meta lm;		/* Line metadata */
+	struct pblk_schedule_meta sche_meta; /* Scheduler infomation */
 
 	struct nvm_addrf addrf;		/* Aligned address format */
 	struct pblk_addrf uaddrf;	/* Unaligned address format */
@@ -861,7 +883,7 @@ int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq);
  */
 void pblk_submit_rec(struct work_struct *work);
 struct pblk_line *pblk_recov_l2p(struct pblk *pblk);
-int pblk_recov_pad(struct pblk *pblk);
+int pblk_recov_pad(struct pblk *pblk, int dev_id);
 int pblk_recov_check_emeta(struct pblk *pblk, struct line_emeta *emeta);
 int pblk_recov_setup_rq(struct pblk *pblk, struct pblk_c_ctx *c_ctx,
 			struct pblk_rec_ctx *recovery, u64 *comp_bits,
@@ -1203,6 +1225,7 @@ static inline int pblk_get_ppa_dev_id(struct ppa_addr ppa){
 	return ppa.c.dev_id;
 }
 
+// pblk_set_ppa_dev_id(ppa, 0) can be used to clear dev_id info in ppa, which is tricky here
 static inline struct ppa_addr pblk_set_ppa_dev_id(struct ppa_addr ppa, int dev_id){
 	struct ppa_addr new_ppa = ppa;
 	new_ppa.c.dev_id = dev_id;
@@ -1303,6 +1326,16 @@ static inline int pblk_get_rq_dev_id(struct pblk *pblk, struct nvm_rq *rqd){
 	return -1;
 }
 
+static inline int pblk_check_geos(struct nvm_tgt_dev *devs[], int nr_dev){
+	int dev_id;
+	struct nvm_geo *geo = &devs[0]->geo;
+	for(dev_id = 1; dev_id < nr_dev; dev_id++){
+		if(memcmp(geo, &devs[dev_id]->geo, sizeof(struct nvm_geo)))
+				return -1;
+	}
+	return 0;
+}
+
 #ifdef CONFIG_NVM_DEBUG
 static inline void print_ppa(struct nvm_geo *geo, struct ppa_addr *p,
 			     char *msg, int error)
@@ -1377,8 +1410,13 @@ static inline int pblk_boundary_ppa_checks(struct nvm_tgt_dev *tgt_dev,
 
 static inline int pblk_check_io(struct pblk *pblk, struct nvm_rq *rqd)
 {
-	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
+	struct nvm_tgt_dev *dev = rqd->dev;
 	struct ppa_addr *ppa_list;
+	int dev_id = pblk_get_rq_dev_id(pblk, rqd);
+	if(dev_id < 0){
+		pr_err("pblk: %s rqd undefined dev\n", __func__);
+		return -EINVAL;
+	}
 
 	ppa_list = (rqd->nr_ppas > 1) ? rqd->ppa_list : &rqd->ppa_addr;
 
@@ -1394,7 +1432,7 @@ static inline int pblk_check_io(struct pblk *pblk, struct nvm_rq *rqd)
 
 		for (i = 0; i < rqd->nr_ppas; i++) {
 			ppa = ppa_list[i];
-			line = &pblk->lines[DEFAULT_DEV_ID][pblk_ppa_to_line(ppa)];
+			line = &pblk->lines[dev_id][pblk_ppa_to_line(ppa)];
 
 			spin_lock(&line->lock);
 			if (line->state != PBLK_LINESTATE_OPEN) {

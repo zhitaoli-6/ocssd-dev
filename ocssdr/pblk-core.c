@@ -86,7 +86,7 @@ static void __pblk_end_io_erase(struct pblk *pblk, struct nvm_rq *rqd)
 	dev_id = pblk_get_rq_dev_id(pblk, rqd);
 	WARN_ON(dev_id == -1);
 	if(dev_id == -1){
-		pr_err("pblk: rqd undefined dev\n", __func__);
+		pr_err("pblk: %s rqd undefined dev\n", __func__);
 		return;
 	}
 
@@ -335,7 +335,6 @@ void pblk_bio_free_pages(struct pblk *pblk, struct bio *bio, int off,
 int pblk_bio_add_pages(struct pblk *pblk, struct bio *bio, gfp_t flags,
 		       int nr_pages, int dev_id)
 {
-	// bugs: DEFAULT_DEV_ID used
 	struct request_queue *q = pblk->devs[dev_id]->q;
 	struct page *page;
 	int i, ret;
@@ -504,6 +503,10 @@ void pblk_set_sec_per_write(struct pblk *pblk, int sec_per_write)
 int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd, int dev_id)
 {
 	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
+	if(!rqd->dev){
+		pr_info("pblk W: %s rqd with dev not defined\n", __func__);
+		rqd->dev = dev;
+	}
 
 #ifdef CONFIG_NVM_DEBUG
 	int ret;
@@ -521,6 +524,10 @@ int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd, int dev_id)
 int pblk_submit_io_sync(struct pblk *pblk, struct nvm_rq *rqd, int dev_id)
 {
 	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
+	if(!rqd->dev){
+		pr_info("pblk W: %s rqd with dev not defined\n", __func__);
+		rqd->dev = dev;
+	}
 
 #ifdef CONFIG_NVM_DEBUG
 	int ret;
@@ -736,6 +743,7 @@ next_rq:
 	rqd.dma_ppa_list = dma_ppa_list;
 	rqd.opcode = cmd_op;
 	rqd.nr_ppas = rq_ppas;
+	rqd.dev = dev;
 
 
 
@@ -899,6 +907,7 @@ static int pblk_line_submit_smeta_io(struct pblk *pblk, struct pblk_line *line,
 	rqd.opcode = cmd_op;
 	rqd.flags = flags;
 	rqd.nr_ppas = lm->smeta_sec;
+	rqd.dev = dev;
 
 
 	for (i = 0; i < lm->smeta_sec; i++, paddr++) {
@@ -975,6 +984,7 @@ static int pblk_blk_erase_sync(struct pblk *pblk, struct ppa_addr ppa, int dev_i
 	memset(&rqd, 0, sizeof(struct nvm_rq));
 
 	pblk_setup_e_rq(pblk, &rqd, ppa);
+	rqd.dev = pblk->devs[dev_id];
 
 	/* The write thread schedules erases so that it minimizes disturbances
 	 * with writes. Thus, there is no need to take the LUN semaphore.
@@ -1539,37 +1549,39 @@ static void pblk_line_close_meta_sync(struct pblk *pblk, int dev_id)
 }
 
 
-// md-bugs here, stop md gracefully
 void pblk_pipeline_stop(struct pblk *pblk)
 {
-	struct pblk_line_mgmt *l_mg = &pblk->l_mg[DEFAULT_DEV_ID];
-	int ret;
-	spin_lock(&l_mg->free_lock);
+	struct pblk_line_mgmt * l_mg;
+	int ret, dev_id;
+	spin_lock(&pblk->lock);
 	if (pblk->state == PBLK_STATE_RECOVERING ||
 					pblk->state == PBLK_STATE_STOPPED) {
-		spin_unlock(&l_mg->free_lock);
+		spin_unlock(&pblk->lock);
 		return;
 	}
 	pblk->state = PBLK_STATE_RECOVERING;
-	spin_unlock(&l_mg->free_lock);
+	spin_unlock(&pblk->lock);
 
 	pblk_flush_writer(pblk);
 	pblk_wait_for_meta(pblk);
 
-	ret = pblk_recov_pad(pblk);
-	if (ret) {
-		pr_err("pblk: could not close data on teardown(%d)\n", ret);
-		return;
+	for(dev_id = 0; dev_id < pblk->nr_dev; dev_id++){
+		l_mg = &pblk->l_mg[dev_id];
+		ret = pblk_recov_pad(pblk, dev_id);
+		if (ret) {
+			pr_err("pblk: could not close data on teardown(%d)\n", ret);
+			return;
+		}
+
+		pblk_line_close_meta_sync(pblk, dev_id);
+
+		spin_lock(&l_mg->free_lock);
+		pblk->state = PBLK_STATE_STOPPED;
+		l_mg->data_line = NULL;
+		l_mg->data_next = NULL;
+		spin_unlock(&l_mg->free_lock);
 	}
-
 	flush_workqueue(pblk->bb_wq);
-	pblk_line_close_meta_sync(pblk, DEFAULT_DEV_ID);
-
-	spin_lock(&l_mg->free_lock);
-	pblk->state = PBLK_STATE_STOPPED;
-	l_mg->data_line = NULL;
-	l_mg->data_next = NULL;
-	spin_unlock(&l_mg->free_lock);
 }
 
 struct pblk_line *pblk_line_replace_data(struct pblk *pblk, int dev_id)
@@ -1728,6 +1740,7 @@ int pblk_blk_erase_async(struct pblk *pblk, struct ppa_addr ppa, int dev_id)
 
 	rqd->end_io = pblk_end_io_erase;
 	rqd->private = pblk;
+	rqd->dev = pblk->devs[dev_id];
 
 	/* The write thread schedules erases so that it minimizes disturbances
 	 * with writes. Thus, there is no need to take the LUN semaphore.
@@ -1761,22 +1774,20 @@ int pblk_line_is_full(struct pblk_line *line)
 	return (line->left_msecs == 0);
 }
 
-// md-bugs
-static void pblk_line_should_sync_meta(struct pblk *pblk)
+static void pblk_line_should_sync_meta(struct pblk *pblk, int dev_id)
 {
 	if (pblk_rl_is_limit(&pblk->rl))
-		pblk_line_close_meta_sync(pblk, DEFAULT_DEV_ID);
+		pblk_line_close_meta_sync(pblk, dev_id);
 }
 
 void pblk_line_close(struct pblk *pblk, struct pblk_line *line)
 {
 	int dev_id = line->dev_id;
-	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
-	struct nvm_geo *geo = &dev->geo;
+	//struct nvm_tgt_dev *dev = pblk->devs[dev_id];
+	//struct nvm_geo *geo = &dev->geo;
 	struct pblk_line_meta *lm = &pblk->lm;
 	struct pblk_line_mgmt *l_mg = &pblk->l_mg[dev_id];
 	struct list_head *move_list;
-	int i;
 
 #ifdef CONFIG_NVM_DEBUG
 	WARN(!bitmap_full(line->map_bitmap, lm->sec_per_line), "pblk: corrupt closed line %d\n", line->id);
@@ -1841,7 +1852,7 @@ void pblk_line_close_meta(struct pblk *pblk, struct pblk_line *line)
 	spin_unlock(&line->lock);
 	spin_unlock(&l_mg->close_lock);
 
-	pblk_line_should_sync_meta(pblk);
+	pblk_line_should_sync_meta(pblk, dev_id);
 }
 
 void pblk_line_close_ws(struct work_struct *work)
@@ -2017,8 +2028,8 @@ int pblk_update_map_gc(struct pblk *pblk, sector_t lba, struct ppa_addr ppa_new,
 
 	spin_lock(&pblk->trans_lock);
 	ppa_l2p = pblk_trans_map_get(pblk, lba);
-	// md-bugs here, ppa_gc should contain device info.
 	ppa_gc = addr_to_gen_ppa(pblk, paddr_gc, gc_line->id);
+	ppa_gc = pblk_set_ppa_dev_id(ppa_gc, gc_line->dev_id);
 
 	if (!pblk_ppa_comp(ppa_l2p, ppa_gc)) {
 		spin_lock(&gc_line->lock);

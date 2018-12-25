@@ -522,6 +522,7 @@ static void pblk_gc_start(struct pblk *pblk)
 {
 	pblk->gc.gc_active = 1;
 	pr_debug("pblk: gc start\n");
+	pr_err("pblk: gc start, bug(md-bugs) in gc left to be fixed!!!\n");
 }
 
 void pblk_gc_should_start(struct pblk *pblk)

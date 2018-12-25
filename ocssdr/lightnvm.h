@@ -263,12 +263,13 @@ struct nvm_chk_meta {
 
 struct nvm_target {
 	struct list_head list;
-	struct nvm_tgt_dev *dev;
+	struct nvm_tgt_dev **dev;
+	int nr_dev;
 	struct nvm_tgt_type *type;
 	struct gendisk *disk;
 };
 
-struct nvm_md_target{
+struct nvm_md_target {
 	struct list_head list;
 	struct nvm_tgt_type *type;
 	struct gendisk *disk;

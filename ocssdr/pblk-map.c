@@ -70,8 +70,8 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 			kref_get(&line->ref);
 			dev_ppa = pblk_set_ppa_dev_id(ppa_list[i], line->dev_id);
 			w_ctx = pblk_rb_w_ctx(&pblk->rwb, sentry + i);
-			w_ctx->ppa = dev_ppa; // modified by Zhitao
-			//w_ctx->ppa = ppa_list[i]; // modified by Zhitao
+			w_ctx->ppa = dev_ppa; // modified by zhitao
+			//w_ctx->ppa = ppa_list[i]; // modified by zhitao
 			meta_list[meta_list_idx].lba[meta_list_mod] = cpu_to_le64(w_ctx->lba);//modify by kan
 
             //for debug
