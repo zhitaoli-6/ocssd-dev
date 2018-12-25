@@ -369,13 +369,13 @@ void pblk_gc_free_full_lines(struct pblk *pblk)
 	struct pblk_line *line;
 	int dev_id;
 
-	for(dev_id = 0; dev_id < pblk->nr_dev; dev_id++){
+	for(dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
 		l_mg = &pblk->l_mg[dev_id];
 		do {
 			spin_lock(&l_mg->gc_lock);
 			if (list_empty(&l_mg->gc_full_list)) {
 				spin_unlock(&l_mg->gc_lock);
-				return;
+				break;
 			}
 
 			line = list_first_entry(&l_mg->gc_full_list,
@@ -413,9 +413,14 @@ static void pblk_gc_run(struct pblk *pblk)
 
 	pblk_gc_free_full_lines(pblk);
 
+	pr_info("pblk gc: %s called here\n", __func__);
+
 	run_gc = pblk_gc_should_run(&pblk->gc, &pblk->rl);
 	if (!run_gc || (atomic_read(&gc->read_inflight_gc) >= PBLK_GC_L_QD))
 		return;
+
+	pr_err("pblk gc: gc should run while forbidden by zhitao\n");
+	return;
 
 next_gc_group:
 	group_list = l_mg->gc_lists[gc_group++];

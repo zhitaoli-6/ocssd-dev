@@ -1,0 +1,2 @@
+rmmod ./pblk.ko
+insmod ./pblk.ko

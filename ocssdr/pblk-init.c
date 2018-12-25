@@ -491,6 +491,9 @@ static void pblk_core_free(struct pblk *pblk)
 	mempool_destroy(pblk->w_rq_pool);
 
 	pblk_free_global_caches(pblk);
+	kfree(pblk->l_mg);
+	kfree(pblk->luns);
+	kfree(pblk->lines);
 	kfree(pblk->pad_dist);
 }
 
@@ -522,6 +525,7 @@ static void pblk_lines_free(struct pblk *pblk)
 	struct pblk_line_mgmt *l_mg;
 	struct pblk_line *line;
 	int i, dev_id;
+	pr_info("pblk: begin free lines...\n");
 	for(dev_id = 0; dev_id < pblk->nr_dev; dev_id++){
 		l_mg = &pblk->l_mg[dev_id];
 		spin_lock(&l_mg->free_lock);
@@ -539,6 +543,7 @@ static void pblk_lines_free(struct pblk *pblk)
 		kfree(pblk->luns[dev_id]);
 		kfree(pblk->lines[dev_id]);
 	}
+	pr_info("pblk: finish free lines!\n");
 }
 
 static int pblk_bb_get_tbl(struct nvm_tgt_dev *dev, struct pblk_lun *rlun,
@@ -1182,12 +1187,15 @@ static void pblk_free(struct pblk *pblk)
 
 static void pblk_tear_down(struct pblk *pblk)
 {
+	pr_info("pblk: pipeline down...\n");
 	pblk_pipeline_stop(pblk);
+	pr_info("pblk: stop writer...\n");
 	pblk_writer_stop(pblk);
 	pblk_rb_sync_l2p(&pblk->rwb);
 	pblk_rl_free(&pblk->rl);
 
 	pr_debug("pblk: consistent tear down\n");
+	pr_info("pblk: done tear down\n");
 }
 
 static void pblk_exit(void *private)
@@ -1195,7 +1203,9 @@ static void pblk_exit(void *private)
 	struct pblk *pblk = private;
 
 	down_write(&pblk_lock);
+	pr_info("pblk: gc exit...\n");
 	pblk_gc_exit(pblk);
+	pr_info("pblk: tear down...\n");
 	pblk_tear_down(pblk);
 
 #ifdef CONFIG_NVM_DEBUG
@@ -1305,6 +1315,8 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 		goto fail_free_lines;
 	}
 	pr_info("pblk: done pblk_rwb_init\n");
+	//ret = -EINVAL;
+	//goto fail_free_rwb;
 
     if(flags & NVM_TARGET_FACTORY) {   //add by kan for debug 
         printk("pblk: target factory\n"); //add by kan for debug

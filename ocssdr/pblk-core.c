@@ -122,7 +122,7 @@ static void pblk_end_io_erase(struct nvm_rq *rqd)
  */
 struct nvm_chk_meta *pblk_chunk_get_info(struct pblk *pblk, int dev_id)
 {
-	pr_info("pblk: %s dev_id %d\n", __func__, dev_id);
+	//pr_info("pblk: %s dev_id %d\n", __func__, dev_id);
 	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
 	struct nvm_geo *geo = &dev->geo;
 	struct nvm_chk_meta *meta;
@@ -1265,7 +1265,7 @@ static int pblk_line_prepare(struct pblk *pblk, struct pblk_line *line)
 	struct pblk_line_meta *lm = &pblk->lm;
 	int blk_to_erase;
 
-    printk("pblk_line_prepare line id =%d\n",line->id); //add by kan
+    pr_info("pblk: pblk_line_prepare line id %d of dev_id %d\n",line->id, line->dev_id); //add by kan
 	line->map_bitmap = kzalloc(lm->sec_bitmap_len, GFP_ATOMIC);
 	if (!line->map_bitmap)
 		return -ENOMEM;
@@ -1562,10 +1562,13 @@ void pblk_pipeline_stop(struct pblk *pblk)
 	pblk->state = PBLK_STATE_RECOVERING;
 	spin_unlock(&pblk->lock);
 
+	pr_info("pblk: flush writer...\n");
 	pblk_flush_writer(pblk);
 	pblk_wait_for_meta(pblk);
+	pr_info("pblk: flush writer done\n");
 
 	for(dev_id = 0; dev_id < pblk->nr_dev; dev_id++){
+		pr_info("pblk: pad writes of dev %d...\n", dev_id);
 		l_mg = &pblk->l_mg[dev_id];
 		ret = pblk_recov_pad(pblk, dev_id);
 		if (ret) {
@@ -1573,6 +1576,7 @@ void pblk_pipeline_stop(struct pblk *pblk)
 			return;
 		}
 
+		pr_info("pblk: wait for pad writes of dev %d\n", dev_id);
 		pblk_line_close_meta_sync(pblk, dev_id);
 
 		spin_lock(&l_mg->free_lock);
@@ -1663,7 +1667,8 @@ void pblk_line_free(struct pblk *pblk, struct pblk_line *line)
 	line->invalid_bitmap = NULL;
 	line->smeta = NULL;
 	line->emeta = NULL;
-    printk("pblk_line_free line id = %d\n", line->id);//add by kan
+    //printk("pblk_line_free line id = %d\n", line->id);//add by kan
+    //pr_info("pblk gc: pblk_line_free line id = %d of dev_id %d\n", line->id, line->dev_id);
 }
 
 static void __pblk_line_put(struct pblk *pblk, struct pblk_line *line)

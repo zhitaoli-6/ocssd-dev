@@ -334,8 +334,14 @@ static void pblk_end_io_recov(struct nvm_rq *rqd)
 {
 	struct pblk_pad_rq *pad_rq = rqd->private;
 	struct pblk *pblk = pad_rq->pblk;
+	
+	int dev_id = pblk_get_rq_dev_id(pblk, rqd);
+	if(dev_id < 0){
+		pr_err("pblk: %s rqd undefined dev\n", __func__);
+		dev_id = DEFAULT_DEV_ID;
+	}
 
-	pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas, DEFAULT_DEV_ID);
+	pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas, dev_id);
 
 	pblk_free_rqd(pblk, rqd, PBLK_WRITE_INT);
 
@@ -449,6 +455,7 @@ next_pad_rq:
 			__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
 
 			dev_ppa = addr_to_gen_ppa(pblk, w_ptr, line->id);
+			dev_ppa = pblk_set_ppa_dev_id(dev_ppa, dev_id);
 
 			pblk_map_invalidate(pblk, dev_ppa);
 
@@ -1132,12 +1139,16 @@ int pblk_recov_pad(struct pblk *pblk, int dev_id)
 	left_msecs = line->left_msecs;
 	spin_unlock(&l_mg->free_lock);
 
+	pr_info("pblk rec: begin pad line %d of dev %d\n", line->id, line->dev_id);
+
 	ret = pblk_recov_pad_oob(pblk, line, left_msecs);
 	if (ret) {
 		pr_err("pblk: Tear down padding failed (%d)\n", ret);
 		return ret;
 	}
+	pr_info("pblk rec: wait for pad line meta\n");
 
 	pblk_line_close_meta(pblk, line);
+	pr_info("pblk rec: end pad line\n");
 	return ret;
 }

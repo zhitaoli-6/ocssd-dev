@@ -189,7 +189,7 @@ static void pblk_read_put_rqd_kref(struct pblk *pblk, struct nvm_rq *rqd)
 	for (i = 0; i < rqd->nr_ppas; i++) {
 		struct ppa_addr ppa = ppa_list[i];
 		struct pblk_line *line;
-		dev_id = pblk_get_ppa_dev_id(ppa);
+		dev_id = DEFAULT_DEV_ID;
 
 		line = &pblk->lines[dev_id][pblk_ppa_to_line(ppa)];
 		kref_put(&line->ref, pblk_line_put_wq);
@@ -350,7 +350,6 @@ static int pblk_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	hole = find_first_zero_bit(read_bitmap, nr_secs);
 	do {
 		int line_id = pblk_ppa_to_line(rqd->ppa_list[i]);
-		//int dev_id = pblk_get_ppa_dev_id(rqd->ppa_list[i]);
 		struct pblk_line *line = &pblk->lines[dev_id][line_id];
 
 		kref_put(&line->ref, pblk_line_put);

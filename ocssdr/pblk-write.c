@@ -85,7 +85,6 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 		return;
 	}
 
-
 #ifdef CONFIG_NVM_DEBUG
 	atomic_long_sub(c_ctx->nr_valid, &pblk->inflight_writes);
 #endif

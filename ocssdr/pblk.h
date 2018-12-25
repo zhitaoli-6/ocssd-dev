@@ -57,7 +57,7 @@
 
 #define PBLK_DEFAULT_OP (21)
 
-#define DEFAULT_DEV_ID (0)
+#define DEFAULT_DEV_ID (1)
 
 enum {
 	PBLK_READ		= READ,
