@@ -42,7 +42,7 @@ static int pblk_read_from_cache(struct pblk *pblk, struct bio *bio,
 }
 
 static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd,
-				 sector_t blba, unsigned long *read_bitmap)
+				 sector_t blba, unsigned long *read_bitmap, struct ppa_addr  *ppa_list)
 {
 	struct pblk_sec_meta *meta_list = rqd->meta_list;
 	struct bio *bio = rqd->bio;
@@ -54,6 +54,12 @@ static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd,
     struct nvm_geo *geo = &dev->geo; //add by kan
     int meta_list_idx; //add by kan
     int meta_list_mod; //add by kan
+
+#ifdef META_READ
+	if (!meta_list) {
+		pr_err("pblk: %s: rqd->meta_list NULL, can't run META_READ\n", __func__);
+	}
+#endif
 
 	pblk_lookup_l2p_seq(pblk, ppas, blba, nr_secs);
 
@@ -68,10 +74,12 @@ retry:
 		if (pblk_ppa_empty(p)) {
 			WARN_ON(test_and_set_bit(i, read_bitmap));
             
+#ifdef META_READ
 			meta_list[meta_list_idx].lba[0] = cpu_to_le64(ADDR_EMPTY); //modify by kan
 			meta_list[meta_list_idx].lba[1] = cpu_to_le64(ADDR_EMPTY); //modify by kan
 			meta_list[meta_list_idx].lba[2] = cpu_to_le64(ADDR_EMPTY); //modify by kan
 			meta_list[meta_list_idx].lba[3] = cpu_to_le64(ADDR_EMPTY); //modify by kan
+#endif
 
 			if (unlikely(!advanced_bio)) {
 				bio_advance(bio, (i) * PBLK_EXPOSED_PAGE_SIZE);
@@ -91,17 +99,19 @@ retry:
 				goto retry;
 			}
 			WARN_ON(test_and_set_bit(i, read_bitmap));
+#ifdef META_READ
 			meta_list[meta_list_idx].lba[0] = cpu_to_le64(lba); //modify by kan
 			meta_list[meta_list_idx].lba[1] = cpu_to_le64(lba); //modify by kan
 			meta_list[meta_list_idx].lba[2] = cpu_to_le64(lba); //modify by kan
 			meta_list[meta_list_idx].lba[3] = cpu_to_le64(lba); //modify by kan
+#endif
 			advanced_bio = true;
 #ifdef CONFIG_NVM_DEBUG
 			atomic_long_inc(&pblk->cache_reads);
 #endif
 		} else {
 			/* Read from media non-cached sectors */
-			rqd->ppa_list[j++] = p;
+			ppa_list[j++] = p;
 		}
 
 next:
@@ -109,10 +119,15 @@ next:
 			bio_advance(bio, PBLK_EXPOSED_PAGE_SIZE);
 	}
 
+	// question: meaning?  by zhitao.
+	// PBLK_READ_RANDOM always. by zhitao.
+	/*
 	if (pblk_io_aligned(pblk, nr_secs))
 		rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_SEQUENTIAL);
 	else
 		rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_RANDOM);
+	*/
+	rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_RANDOM);
 
 #ifdef CONFIG_NVM_DEBUG
 	atomic_long_add(nr_secs, &pblk->inflight_reads);
@@ -211,13 +226,13 @@ static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 	struct nvm_tgt_dev *dev = rqd->dev;
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *bio = rqd->bio;
-	unsigned long start_time = r_ctx->start_time;
-	if(!dev){
+	//unsigned long start_time = r_ctx->start_time;
+	if (!dev) {
 		pr_err("pblk: %s rqd undefined dev\n", __func__);
 		dev = pblk->devs[DEFAULT_DEV_ID];
 	}
 
-	generic_end_io_acct(dev->q, READ, &pblk->disk->part0, start_time);
+	//generic_end_io_acct(dev->q, READ, &pblk->disk->part0, start_time);
 	if (rqd->error)
 		pblk_log_read_err(pblk, rqd);
 #ifdef CONFIG_NVM_DEBUG
@@ -225,7 +240,7 @@ static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 		WARN_ONCE(bio->bi_status, "pblk: corrupted read error\n");
 #endif
 
-	pblk_read_check(pblk, rqd, r_ctx->lba);
+	//pblk_read_check(pblk, rqd, r_ctx->lba);
 
 	bio_put(bio);
 	if (r_ctx->private)
@@ -249,6 +264,99 @@ static void pblk_end_io_read(struct nvm_rq *rqd)
 
 	__pblk_end_io_read(pblk, rqd, true);
 }
+
+static void __pblk_end_io_read_md(struct pblk *pblk, struct pblk_md_read_ctx *md_r_ctx) 
+{
+	struct nvm_rq *md_rqd, *child_rqd;
+	struct bio *md_bio, *child_bio;
+	int *offset;
+	struct ppa_addr ppa;
+	int i, dev_id;
+	struct bio_vec src_bv, dst_bv;
+	void *src_p, *dst_p;
+	int done = atomic_inc_return(&md_r_ctx->completion_cnt);
+
+	if (done == md_r_ctx->nr_child_io) {
+		// now user read io complete
+		md_rqd = md_r_ctx->rqd;
+		md_bio = md_rqd->bio;
+			
+		offset = kcalloc(NVM_MD_MAX_DEV_CNT, sizeof(int), GFP_KERNEL);
+		if (!offset) {
+			pr_err("pblk: %s not able to alloc offset arr\n", __func__);
+			goto out;
+		}
+		// fill md_bio with child_bio
+		for (i = 0; i < md_rqd->nr_ppas; i++) {
+			if (test_bit(i, &md_r_ctx->read_bitmap))
+				continue;
+
+			ppa = md_r_ctx->ppa_list[i];
+			dev_id = pblk_get_ppa_dev_id(ppa);
+			child_bio = md_r_ctx->bio[dev_id];
+
+			src_bv = child_bio->bi_io_vec[offset[dev_id]];
+			dst_bv = md_bio->bi_io_vec[i];
+
+			src_p = kmap_atomic(src_bv.bv_page);
+			dst_p = kmap_atomic(dst_bv.bv_page);
+
+			memcpy(dst_p + dst_bv.bv_offset,
+				src_p + src_bv.bv_offset,
+				PBLK_EXPOSED_PAGE_SIZE);
+
+			kunmap_atomic(src_p);
+			kunmap_atomic(dst_p);
+
+			offset[dev_id]++;
+		}
+out:
+		bio_endio(md_bio);
+		bio_put(md_bio);
+
+		for (dev_id = 0; dev_id < NVM_MD_MAX_DEV_CNT; dev_id++) {
+			if (md_r_ctx->bio[dev_id]) {
+				bio_put(md_r_ctx->bio[dev_id]);
+			}
+		}
+
+		pblk_read_put_rqd_kref(pblk, md_rqd);
+		kfree(md_r_ctx);
+
+#ifdef CONFIG_NVM_DEBUG
+		atomic_long_add(md_rqd->nr_ppas, &pblk->sync_reads);
+		atomic_long_sub(md_rqd->nr_ppas, &pblk->inflight_reads);
+#endif
+
+		pblk_free_rqd(pblk, md_rqd, PBLK_READ);
+	}
+}
+
+static void pblk_end_io_read_child(struct nvm_rq *child_rqd)
+{
+	struct nvm_rq *rqd = child_rqd;
+	struct pblk *pblk = rqd->private;
+	struct nvm_tgt_dev *dev = rqd->dev;
+	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
+	struct bio *bio = rqd->bio;
+	if (!dev) {
+		pr_err("pblk: %s rqd undefined dev\n", __func__);
+		dev = pblk->devs[DEFAULT_DEV_ID];
+	}
+
+	if (rqd->error)
+		pblk_log_read_err(pblk, rqd);
+#ifdef CONFIG_NVM_DEBUG
+	else
+		WARN_ONCE(bio->bi_status, "pblk: corrupted read error\n");
+#endif
+
+	__pblk_end_io_read_md(pblk, (struct pblk_md_read_ctx *)r_ctx->private);
+
+	pblk_free_rqd(pblk, rqd, PBLK_READ);
+	atomic_dec(&pblk->inflight_io);
+}
+
 
 static int pblk_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 				 unsigned int bio_init_idx,
@@ -309,6 +417,10 @@ static int pblk_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 		dma_ppa_list = rqd->dma_ppa_list;
 		rqd->ppa_addr = rqd->ppa_list[0];
 	}
+
+#ifndef META_READ
+	memset(rqd->meta_list, 0, pblk_dma_meta_size);
+#endif
 
 	ret = pblk_submit_io_sync(pblk, rqd, dev_id);
 	if (ret) {
@@ -409,6 +521,12 @@ static void pblk_read_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	struct bio *bio = rqd->bio;
 	struct ppa_addr ppa;
 
+#ifdef META_READ
+	if (!meta_list) {
+		pr_err("pblk: %s: rqd->meta_list NULL, can't run META_READ\n", __func__);
+	}
+#endif
+
 	pblk_lookup_l2p_seq(pblk, &ppa, lba, 1);
 
 #ifdef CONFIG_NVM_DEBUG
@@ -418,7 +536,9 @@ static void pblk_read_rq(struct pblk *pblk, struct nvm_rq *rqd,
 retry:
 	if (pblk_ppa_empty(ppa)) {
 		WARN_ON(test_and_set_bit(0, read_bitmap));
+#ifdef META_READ
 		meta_list[0].lba[0] = cpu_to_le64(ADDR_EMPTY); //modify by kan
+#endif
 		return;
 	}
 
@@ -432,7 +552,9 @@ retry:
 		}
 
 		WARN_ON(test_and_set_bit(0, read_bitmap));
+#ifdef META_READ
 		meta_list[0].lba[0] = cpu_to_le64(lba);
+#endif
 
 #ifdef CONFIG_NVM_DEBUG
 		atomic_long_inc(&pblk->cache_reads);
@@ -444,13 +566,126 @@ retry:
 	rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_RANDOM);
 }
 
+static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rqd, struct pblk_md_read_ctx *md_r_ctx)
+{
+	struct nvm_rq *child_rqd[NVM_MD_MAX_DEV_CNT];
+	struct bio *child_bio[NVM_MD_MAX_DEV_CNT];
+	struct ppa_addr ppa_buf[PBLK_MAX_REQ_ADDRS];
+	struct ppa_addr *ppa_list = md_r_ctx->ppa_list;
+	unsigned long read_bitmap = md_r_ctx->read_bitmap;
+	int nr_secs = md_rqd->nr_ppas;
+	int nr_holes = nr_secs - bitmap_weight(&read_bitmap, nr_secs);
+	struct nvm_rq *rqd;
+	struct bio *bio;
+	struct pblk_g_ctx *r_ctx;
+	int nr_child_secs = 0;
+	int nr_child_io = 0;
+	int dev_id, i;
+	int ret = NVM_IO_ERR;
+
+	// fill md_r_ctx
+	for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
+		for (i = 0; i < nr_secs; i++) {
+			if (test_bit(i, &read_bitmap))
+				continue;
+			if (pblk_get_ppa_dev_id(ppa_list[i]) == dev_id) {
+				nr_child_io++;
+				break;
+			}
+		}
+	}
+	md_r_ctx->rqd = md_rqd;
+	md_r_ctx->nr_child_io = nr_child_io;
+	atomic_set(&md_r_ctx->completion_cnt, 0);
+
+	// fill each child_io
+	for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
+		nr_child_secs = 0;
+		for (i = 0; i < nr_secs; i++){
+			if (test_bit(i, &read_bitmap))
+				continue;
+			if (pblk_get_ppa_dev_id(ppa_list[i]) == dev_id) {
+				// clear dev_id info in ppa
+				ppa_buf[nr_child_secs] = ppa_list[i];
+				ppa_buf[nr_child_secs] = pblk_set_ppa_dev_id(ppa_buf[nr_child_secs], 0);
+				nr_child_secs++;
+			}
+		}
+		// no ppa of dev_id
+		if (!nr_child_secs) 
+			continue;
+
+		child_rqd[dev_id] = pblk_alloc_rqd(pblk, PBLK_READ);
+		rqd = child_rqd[dev_id];
+		rqd->dev = pblk->devs[dev_id];
+		rqd->opcode = NVM_OP_PREAD;
+		rqd->nr_ppas = nr_child_secs;
+		rqd->private = pblk;
+		rqd->end_io = pblk_end_io_read_child;
+		rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_RANDOM);
+
+		r_ctx = nvm_rq_to_pdu(rqd);
+		r_ctx->private = md_r_ctx;
+
+		// fill rqd->bio
+		child_bio[dev_id] = bio_alloc(GFP_KERNEL, nr_child_secs);
+		bio = child_bio[dev_id];
+		if (pblk_bio_add_pages(pblk, bio, GFP_KERNEL, nr_child_secs, dev_id))
+			goto prepare_err;
+		if (bio->bi_vcnt != nr_child_secs)
+			goto prepare_err;
+		bio->bi_iter.bi_sector = 0;
+		bio_set_op_attrs(bio, REQ_OP_READ, 0);
+
+		md_r_ctx->bio[dev_id] = bio;
+		rqd->bio = bio;
+
+		// fill rqd ppa_list
+		rqd->meta_list = nvm_dev_dma_alloc(rqd->dev->parent, GFP_KERNEL,
+								&rqd->dma_meta_list);
+		if (!rqd->meta_list) {
+			pr_err("pblk: not able to allocate ppa list\n");
+			goto prepare_err;
+		}
+		if (nr_child_secs > 1) {
+			rqd->ppa_list = rqd->meta_list + pblk_dma_meta_size;
+			rqd->dma_ppa_list = rqd->dma_meta_list + pblk_dma_meta_size;
+
+			for (i = 0; i < nr_child_secs; i++) {
+				rqd->ppa_list[i] = ppa_buf[i];
+			}
+		} else {
+			rqd->ppa_addr = ppa_buf[0];
+		}
+
+		ret = pblk_submit_read_io(pblk, rqd, dev_id);
+		if (!ret) {
+			pr_err("pblk: md read IO submission to dev %d failed\n", dev_id);
+			goto fail_submission;
+		}
+	}
+prepare_err:
+	pblk_bio_free_pages(pblk, bio, 0, nr_child_secs);
+	pblk_free_rqd(pblk, rqd, PBLK_READ);
+	return NVM_IO_ERR;
+fail_submission:
+	// todo: failed Read IO
+	pr_err("pblk: %s todo work: failed IO\n", __func__);
+	pblk_free_rqd(pblk, rqd, PBLK_READ);
+	atomic_dec(&pblk->inflight_io);
+
+	bio_put(md_rqd->bio);
+	pblk_free_rqd(pblk, md_rqd, PBLK_READ);
+
+	kfree(md_r_ctx);
+	return NVM_IO_ERR;
+}
+
 int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 {
-	int dev_id = DEFAULT_DEV_ID;
-	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
-	struct request_queue *q = dev->q;
 	sector_t blba = pblk_get_lba(bio);
 	unsigned int nr_secs = pblk_get_secs(bio);
+	struct pblk_md_read_ctx *md_r_ctx;
 	struct pblk_g_ctx *r_ctx;
 	struct nvm_rq *rqd;
 	unsigned int bio_init_idx;
@@ -463,10 +698,14 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 					(unsigned long long)blba, nr_secs);
 		return NVM_IO_ERR;
 	}
-
-	generic_start_io_acct(q, READ, bio_sectors(bio), &pblk->disk->part0);
-
+	//generic_start_io_acct(q, READ, bio_sectors(bio), &pblk->disk->part0); 
 	bitmap_zero(&read_bitmap, nr_secs);
+
+	md_r_ctx = kcalloc(1, sizeof(struct pblk_md_read_ctx), GFP_ATOMIC);
+	if (!md_r_ctx) {
+		pr_err("pblk: %s: not able to alloc md_r_ctx\n", __func__);
+		return NVM_IO_ERR;
+	}
 
 	rqd = pblk_alloc_rqd(pblk, PBLK_READ);
 
@@ -477,7 +716,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	rqd->end_io = pblk_end_io_read;
 
 	r_ctx = nvm_rq_to_pdu(rqd);
-	r_ctx->start_time = jiffies;
+	//r_ctx->start_time = jiffies;
 	r_ctx->lba = blba;
 
 	/* Save the index for this bio's start. This is needed in case
@@ -485,25 +724,8 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	 */
 	bio_init_idx = pblk_get_bi_idx(bio);
 
-	rqd->meta_list = nvm_dev_dma_alloc(dev->parent, GFP_KERNEL,
-							&rqd->dma_meta_list);
-    //size = pblk_dma_meta_size + pblk_dma_ppa_size; //add by kan
-    //rqd->meta_list = dma_alloc_coherent(ctrl->dev, size, &rqd->dma_meta_list, GFP_KERNEL); //modify by kan
-
-	if (!rqd->meta_list) {
-		pr_err("pblk: not able to allocate ppa list\n");
-		goto fail_rqd_free;
-	}
-
-    //printk("pblk: ori bio reead nr_ppas%d\n", rqd->nr_ppas); //add by kan for debug
-	if (nr_secs > 1) {
-		rqd->ppa_list = rqd->meta_list + pblk_dma_meta_size;
-		rqd->dma_ppa_list = rqd->dma_meta_list + pblk_dma_meta_size;
-
-		pblk_read_ppalist_rq(pblk, rqd, blba, &read_bitmap);
-	} else {
-		pblk_read_rq(pblk, rqd, blba, &read_bitmap);
-	}
+	pblk_read_ppalist_rq(pblk, rqd, blba, &read_bitmap, md_r_ctx->ppa_list);
+	md_r_ctx->read_bitmap = read_bitmap;
 
 	bio_get(bio);
 	if (bitmap_full(&read_bitmap, nr_secs)) {
@@ -513,45 +735,21 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		return NVM_IO_OK;
 	}
 
-	/* All sectors are to be read from the device */
+	return pblk_submit_read_bio_md_async(pblk, rqd, md_r_ctx);
+
+	/*  We async read from devices in both case
+	 *
+	// All sectors are to be read from the device
 	if (bitmap_empty(&read_bitmap, rqd->nr_ppas)) {
-		struct bio *int_bio = NULL;
-
-		/* Clone read bio to deal with read errors internally */
-		int_bio = bio_clone_fast(bio, GFP_KERNEL, pblk_bio_set);
-		if (!int_bio) {
-			pr_err("pblk: could not clone read bio\n");
-			goto fail_end_io;
-		}
-
-		rqd->bio = int_bio;
-		r_ctx->private = bio;
-        //printk("pblk: device read ppa=%llx nr_ppas=%d\n", rqd->ppa_addr.ppa, rqd->nr_ppas); //add by kan for debug
-
-		ret = pblk_submit_read_io(pblk, rqd, dev_id);
-		if (ret) {
-			pr_err("pblk: read IO submission failed\n");
-			if (int_bio)
-				bio_put(int_bio);
-			goto fail_end_io;
-		}
-
-		return NVM_IO_OK;
+		pr_info("pblk: pblk-read.c %s: async_read called\n", __func__);
+		return pblk_submit_read_bio_md_async(pblk, rqd, md_r_ctx);
 	}
 
-	/* The read bio request could be partially filled by the write buffer,
-	 * but there are some holes that need to be read from the drive.
-	 */
+	// The read bio request could be partially filled by the write buffer,
+	// but there are some holes that need to be read from the drive.
+	pr_info("pblk: pblk-read.c %s: partial_read called\n", __func__);
 	return pblk_partial_read_bio(pblk, rqd, bio_init_idx, &read_bitmap);
-
-fail_rqd_free:
-	pblk_free_rqd(pblk, rqd, PBLK_READ);
-    printk("%s fail_rqd_free\n",__func__);//add by kan
-	return ret;
-fail_end_io:
-	__pblk_end_io_read(pblk, rqd, false);
-    printk("%s fail_end_io\n",__func__); //add by kan
-	return ret;
+	*/
 }
 
 static int read_ppalist_rq_gc(struct pblk *pblk, struct nvm_rq *rqd,
@@ -631,6 +829,8 @@ int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq)
 	struct nvm_rq rqd;
 	int data_len;
 	int ret = NVM_IO_OK;
+
+	pr_err("pblk: pblk-read.c %s called here\n", __func__);
 
 	memset(&rqd, 0, sizeof(struct nvm_rq));
 

@@ -125,7 +125,9 @@ struct pblk_c_ctx {
 /* multiple devices read context */
 struct pblk_md_read_ctx {
 	struct nvm_rq *rqd;
+	struct bio *bio[NVM_MD_MAX_DEV_CNT];
 	struct ppa_addr ppa_list[PBLK_MAX_REQ_ADDRS];
+	unsigned long read_bitmap;
 	int nr_child_io;
 	atomic_t completion_cnt;
 };
