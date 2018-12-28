@@ -32,7 +32,7 @@ enum {
 #define NVM_20_SEC_BITS (24)
 #define NVM_20_RESERVED (8)
 
-#define OCSSDR_MAX_DEVICES_CNT (3)
+#define NVM_MD_MAX_DEV_CNT (3)
 enum {
 	NVM_OCSSD_SPEC_12 = 12,
 	NVM_OCSSD_SPEC_20 = 20,
@@ -273,7 +273,7 @@ struct nvm_md_target {
 	struct list_head list;
 	struct nvm_tgt_type *type;
 	struct gendisk *disk;
-	struct nvm_target* child_targets[OCSSDR_MAX_DEVICES_CNT];
+	struct nvm_target* child_targets[NVM_MD_MAX_DEV_CNT];
 };
 #define ADDR_EMPTY (~0ULL)
 

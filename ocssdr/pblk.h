@@ -57,7 +57,9 @@
 
 #define PBLK_DEFAULT_OP (21)
 
-#define DEFAULT_DEV_ID (1)
+#define DEFAULT_DEV_ID (0)
+
+//#define META_READ
 
 enum {
 	PBLK_READ		= READ,
@@ -118,6 +120,16 @@ struct pblk_c_ctx {
 	unsigned int nr_valid;
 	unsigned int nr_padded;
 };
+
+
+/* multiple devices read context */
+struct pblk_md_read_ctx {
+	struct nvm_rq *rqd;
+	struct ppa_addr ppa_list[PBLK_MAX_REQ_ADDRS];
+	int nr_child_io;
+	atomic_t completion_cnt;
+};
+
 
 /* read context */
 struct pblk_g_ctx {

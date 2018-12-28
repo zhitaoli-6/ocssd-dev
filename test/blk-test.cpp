@@ -18,7 +18,7 @@ using namespace std;
 #define SECTOR_SIZE	(4096)
 
 
-#define DEVICE_NAME	"/dev/mydevice0"
+#define DEVICE_NAME	"/dev/md_pblk"
 #define MODULE_NAME	"ram-disk"
 #define MY_BLOCK_MAJOR	"240"
 #define MY_BLOCK_MINOR	"0"
@@ -105,6 +105,7 @@ public:
 			//else cout << "passed" << endl;
 		}
 		delete []_w_buf;
+		close(fd);
 	}
 	static void check_filled_data(size_t capacity){
 		int fd = open(DEVICE_NAME, O_RDWR);
@@ -115,7 +116,7 @@ public:
 		char *_w_buf = new char[SECTOR_SIZE];
 		char *_r_buf = new char[SECTOR_SIZE];
 		int page_cnt = capacity/SECTOR_SIZE;
-		for(int page = max(0, -138); page < page_cnt; page++){
+		for(int page = max(0, -128); page < page_cnt; page++){
 			int sector = page;
 			for(int i = 0; i < sizeof(buffer); i++)
 				_w_buf[i] = rand() % 26 + 'a';
@@ -130,6 +131,7 @@ public:
 		}
 		delete []_w_buf;
 		delete []_r_buf;
+		close(fd);
 	}
 	
 	void run_many(){
@@ -175,10 +177,10 @@ int main()
 
 	//Tester::run();
 	//Tester::run_single(4*1024*1024);
-	const unsigned int capacity = SECTOR_SIZE * 1024 * 2;
+	const unsigned int capacity = SECTOR_SIZE * 1024 * 16;
 	Tester tester;
-	tester.fill_data(capacity);
-	//tester.check_filled_data(capacity);
+	//tester.fill_data(capacity);
+	tester.check_filled_data(capacity);
 //	tester.run_many();
 	//tester.read_single(capacity);
 	return 0;

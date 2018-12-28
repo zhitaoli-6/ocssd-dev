@@ -708,7 +708,8 @@ static int nvm_remove_ocssdr_tgt(struct nvm_ioctl_remove *remove)
 		pr_info("nvm: not found ocssdr target %s\n", remove->tgtname);
 		return ret;
 	}
-	for(i = 0; i < OCSSDR_MAX_DEVICES_CNT; i++){
+
+	for(i = 0; i < NVM_MD_MAX_DEV_CNT; i++){
 		child_target = md_tgt->child_targets[i];
 		if (!child_target)
 			break;
@@ -716,13 +717,13 @@ static int nvm_remove_ocssdr_tgt(struct nvm_ioctl_remove *remove)
 		ret = __nvm_remove_pblk_tgt(child_target);
 		if(ret){
 			pr_info("nvm: corrupted ocssdr child target %s\n", child_target->disk->disk_name);
-			up_write(&ocssdr_lock);
 			return ret;
 		}
 	}
 
 	pr_info("nvm: remove %d ocssdr child targets totally, now to remove ocssdr\n", i);
 	ret = __nvm_remove_ocssdr_tgt(md_tgt);
+	pr_info("nvm: remove ocssdr target %s ret %d\n", remove->tgtname, ret);
 
 	return ret;
 }
@@ -1211,16 +1212,16 @@ EXPORT_SYMBOL(nvm_unregister);
 
 static int __nvm_configure_create(struct nvm_ioctl_create *create)
 {
-	struct nvm_dev *dev[OCSSDR_MAX_DEVICES_CNT];
+	struct nvm_dev *dev[NVM_MD_MAX_DEV_CNT];
 	//struct nvm_ioctl_create_simple *s;
-	char *devname[OCSSDR_MAX_DEVICES_CNT];
-	char *tgtname[OCSSDR_MAX_DEVICES_CNT];
+	char *devname[NVM_MD_MAX_DEV_CNT];
+	char *tgtname[NVM_MD_MAX_DEV_CNT];
 	char tgttype[NVM_TTYPE_NAME_MAX];
 	int nr_dev, i;
 	int len;
 	int ret = 0;
 	/* create->devname will be changed by parse algorithm */
-	nr_dev = parse_by_delimiter(create->dev, ',', devname, OCSSDR_MAX_DEVICES_CNT);
+	nr_dev = parse_by_delimiter(create->dev, ',', devname, NVM_MD_MAX_DEV_CNT);
 	if(!nr_dev) {
 		pr_err("nvm: no valid devices given\n");
 		return -EINVAL;
@@ -1422,8 +1423,10 @@ static long nvm_ioctl_dev_remove(struct file *file, void __user *arg)
 
 	ret = nvm_remove_pblk_tgt(&remove);
 
-	if(ret) 
+	if (ret) 
 		ret = nvm_remove_ocssdr_tgt(&remove);
+	else
+		pr_info("nvm: remove %s as pblk target ret 0\n", remove.tgtname);
 	return ret;
 }
 
