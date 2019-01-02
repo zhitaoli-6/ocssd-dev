@@ -223,16 +223,10 @@ static void pblk_end_user_read(struct bio *bio)
 static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 			       bool put_line)
 {
-	struct nvm_tgt_dev *dev = rqd->dev;
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *bio = rqd->bio;
 	//unsigned long start_time = r_ctx->start_time;
-	if (!dev) {
-		pr_err("pblk: %s rqd undefined dev\n", __func__);
-		dev = pblk->devs[DEFAULT_DEV_ID];
-	}
 
-	//generic_end_io_acct(dev->q, READ, &pblk->disk->part0, start_time);
 	if (rqd->error)
 		pblk_log_read_err(pblk, rqd);
 #ifdef CONFIG_NVM_DEBUG
@@ -275,11 +269,15 @@ static void __pblk_end_io_read_md(struct pblk *pblk, struct pblk_md_read_ctx *md
 	struct bio_vec src_bv, dst_bv;
 	void *src_p, *dst_p;
 	int done = atomic_inc_return(&md_r_ctx->completion_cnt);
+	int bio_init_idx = md_r_ctx->bio_init_idx;
 
+	pr_info("pblk: %s %s: %d/%d done\n", __FILE__, __func__, done, md_r_ctx->nr_child_io);
 	if (done == md_r_ctx->nr_child_io) {
+		pr_info("pblk: %s %s: now fill md_bio\n", __FILE__,  __func__);
 		// now user read io complete
 		md_rqd = md_r_ctx->rqd;
 		md_bio = md_rqd->bio;
+		goto out;
 			
 		offset = kcalloc(NVM_MD_MAX_DEV_CNT, sizeof(int), GFP_KERNEL);
 		if (!offset) {
@@ -296,7 +294,7 @@ static void __pblk_end_io_read_md(struct pblk *pblk, struct pblk_md_read_ctx *md
 			child_bio = md_r_ctx->bio[dev_id];
 
 			src_bv = child_bio->bi_io_vec[offset[dev_id]];
-			dst_bv = md_bio->bi_io_vec[i];
+			dst_bv = md_bio->bi_io_vec[bio_init_idx + i];
 
 			src_p = kmap_atomic(src_bv.bv_page);
 			dst_p = kmap_atomic(dst_bv.bv_page);
@@ -568,8 +566,6 @@ retry:
 
 static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rqd, struct pblk_md_read_ctx *md_r_ctx)
 {
-	struct nvm_rq *child_rqd[NVM_MD_MAX_DEV_CNT];
-	struct bio *child_bio[NVM_MD_MAX_DEV_CNT];
 	struct ppa_addr ppa_buf[PBLK_MAX_REQ_ADDRS];
 	struct ppa_addr *ppa_list = md_r_ctx->ppa_list;
 	unsigned long read_bitmap = md_r_ctx->read_bitmap;
@@ -580,7 +576,7 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 	struct pblk_g_ctx *r_ctx;
 	int nr_child_secs = 0;
 	int nr_child_io = 0;
-	int dev_id, i;
+	int dev_id, i, hole;
 	int ret = NVM_IO_ERR;
 
 	// fill md_r_ctx
@@ -597,6 +593,7 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 	md_r_ctx->rqd = md_rqd;
 	md_r_ctx->nr_child_io = nr_child_io;
 	atomic_set(&md_r_ctx->completion_cnt, 0);
+	pr_info("pblk: %s: nr_child_io %d\n", __func__, nr_child_io);
 
 	// fill each child_io
 	for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
@@ -609,14 +606,18 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 				ppa_buf[nr_child_secs] = ppa_list[i];
 				ppa_buf[nr_child_secs] = pblk_set_ppa_dev_id(ppa_buf[nr_child_secs], 0);
 				nr_child_secs++;
+				hole++;
 			}
 		}
+
+		pr_info("pblk: pblk-read.c %s, %d/%d in dev %d\n", 
+				__func__, nr_child_secs, nr_secs, dev_id);
+
 		// no ppa of dev_id
 		if (!nr_child_secs) 
 			continue;
 
-		child_rqd[dev_id] = pblk_alloc_rqd(pblk, PBLK_READ);
-		rqd = child_rqd[dev_id];
+		rqd = pblk_alloc_rqd(pblk, PBLK_READ);
 		rqd->dev = pblk->devs[dev_id];
 		rqd->opcode = NVM_OP_PREAD;
 		rqd->nr_ppas = nr_child_secs;
@@ -628,8 +629,7 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 		r_ctx->private = md_r_ctx;
 
 		// fill rqd->bio
-		child_bio[dev_id] = bio_alloc(GFP_KERNEL, nr_child_secs);
-		bio = child_bio[dev_id];
+		bio = bio_alloc(GFP_KERNEL, nr_child_secs);
 		if (pblk_bio_add_pages(pblk, bio, GFP_KERNEL, nr_child_secs, dev_id))
 			goto prepare_err;
 		if (bio->bi_vcnt != nr_child_secs)
@@ -653,17 +653,24 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 
 			for (i = 0; i < nr_child_secs; i++) {
 				rqd->ppa_list[i] = ppa_buf[i];
+				pr_info("pblk: ppa_list[%d] %llu\n", i, ppa_buf[i].ppa);
 			}
 		} else {
 			rqd->ppa_addr = ppa_buf[0];
 		}
 
 		ret = pblk_submit_read_io(pblk, rqd, dev_id);
-		if (!ret) {
+		if (ret) {
 			pr_err("pblk: md read IO submission to dev %d failed\n", dev_id);
 			goto fail_submission;
 		}
 	}
+
+	if (hole != nr_holes) {
+		pr_err("pblk: %s, hole %d not equal to nr_hole %d\n", __func__, hole, nr_holes);
+	}
+	return NVM_IO_OK;
+
 prepare_err:
 	pblk_bio_free_pages(pblk, bio, 0, nr_child_secs);
 	pblk_free_rqd(pblk, rqd, PBLK_READ);
@@ -671,6 +678,7 @@ prepare_err:
 fail_submission:
 	// todo: failed Read IO
 	pr_err("pblk: %s todo work: failed IO\n", __func__);
+	bio_put(bio);
 	pblk_free_rqd(pblk, rqd, PBLK_READ);
 	atomic_dec(&pblk->inflight_io);
 
@@ -688,9 +696,10 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	struct pblk_md_read_ctx *md_r_ctx;
 	struct pblk_g_ctx *r_ctx;
 	struct nvm_rq *rqd;
-	unsigned int bio_init_idx;
 	unsigned long read_bitmap; /* Max 64 ppas per request */
 	int ret = NVM_IO_ERR;
+
+	pr_info("pblk: %s blba %lu, nr_secs %u\n", __func__, blba, nr_secs);
 
 	/* logic error: lba out-of-bounds. Ignore read request */
 	if (blba >= pblk->rl.nr_secs || nr_secs > PBLK_MAX_REQ_ADDRS) {
@@ -722,7 +731,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	/* Save the index for this bio's start. This is needed in case
 	 * we need to fill a partial read.
 	 */
-	bio_init_idx = pblk_get_bi_idx(bio);
+	md_r_ctx->bio_init_idx = pblk_get_bi_idx(bio);
 
 	pblk_read_ppalist_rq(pblk, rqd, blba, &read_bitmap, md_r_ctx->ppa_list);
 	md_r_ctx->read_bitmap = read_bitmap;
@@ -735,6 +744,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		return NVM_IO_OK;
 	}
 
+	pr_info("pblk: pblk-read.c %s: async_read called\n", __func__);
 	return pblk_submit_read_bio_md_async(pblk, rqd, md_r_ctx);
 
 	/*  We async read from devices in both case

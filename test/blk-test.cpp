@@ -18,7 +18,7 @@ using namespace std;
 #define SECTOR_SIZE	(4096)
 
 
-#define DEVICE_NAME	"/dev/md_pblk"
+#define DEVICE_NAME	"/dev/pblk_md"
 #define MODULE_NAME	"ram-disk"
 #define MY_BLOCK_MAJOR	"240"
 #define MY_BLOCK_MINOR	"0"
@@ -71,25 +71,29 @@ public:
 			exit(EXIT_FAILURE);
 		}
 		char *_r_buf = new char[SECTOR_SIZE];
-		for(int page = 0; page < capacity/SECTOR_SIZE; page++){
+		int page_cnt = capacity / SECTOR_SIZE;
+		page_cnt = 1;
+		for(int page = 0; page < page_cnt; page++){
 			int sector = page;
 
 			size_t cnt = read(fd, _r_buf, SECTOR_SIZE);
 			cout << "read page no " << page  << " ";
 			cout << (cnt == SECTOR_SIZE ? "pass" : "fail") << endl;
 		}
+		close(fd);
 	}
-	
 
-
-	static void fill_data(size_t capacity){
+	static void fill_data(size_t capacity, bool single){
 		int fd = open(DEVICE_NAME, O_RDWR);
 		if (fd < 0) {
 			perror("open");
 			exit(EXIT_FAILURE);
 		}
 		char *_w_buf = new char[SECTOR_SIZE];
-		int page_cnt = capacity/SECTOR_SIZE;
+		//int page_cnt = capacity/SECTOR_SIZE;
+		int page_cnt = 1;
+		page_cnt = (single ? 1 : capacity/SECTOR_SIZE);
+
 		for(int page = max(0, -128); page < page_cnt; page++){
 			int sector = page;
 			for(int i = 0; i < sizeof(buffer); i++)
@@ -107,7 +111,7 @@ public:
 		delete []_w_buf;
 		close(fd);
 	}
-	static void check_filled_data(size_t capacity){
+	static void check_filled_data(size_t capacity, bool single){
 		int fd = open(DEVICE_NAME, O_RDWR);
 		if (fd < 0) {
 			perror("open");
@@ -115,7 +119,8 @@ public:
 		}
 		char *_w_buf = new char[SECTOR_SIZE];
 		char *_r_buf = new char[SECTOR_SIZE];
-		int page_cnt = capacity/SECTOR_SIZE;
+		int page_cnt = 1;
+		page_cnt = (single ? 1 : capacity/SECTOR_SIZE);
 		for(int page = max(0, -128); page < page_cnt; page++){
 			int sector = page;
 			for(int i = 0; i < sizeof(buffer); i++)
@@ -177,11 +182,10 @@ int main()
 
 	//Tester::run();
 	//Tester::run_single(4*1024*1024);
-	const unsigned int capacity = SECTOR_SIZE * 1024 * 16;
+	const unsigned int capacity = SECTOR_SIZE * 1024 * 4;
 	Tester tester;
-	//tester.fill_data(capacity);
-	tester.check_filled_data(capacity);
-//	tester.run_many();
-	//tester.read_single(capacity);
+	//tester.fill_data(capacity, false);
+	tester.read_single(capacity);
+	//tester.check_filled_data(capacity, false);
 	return 0;
 }

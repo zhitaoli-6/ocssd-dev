@@ -121,17 +121,16 @@ struct pblk_c_ctx {
 	unsigned int nr_padded;
 };
 
-
 /* multiple devices read context */
 struct pblk_md_read_ctx {
 	struct nvm_rq *rqd;
+	int bio_init_idx; // md_bio bi_idx
 	struct bio *bio[NVM_MD_MAX_DEV_CNT];
 	struct ppa_addr ppa_list[PBLK_MAX_REQ_ADDRS];
 	unsigned long read_bitmap;
 	int nr_child_io;
 	atomic_t completion_cnt;
 };
-
 
 /* read context */
 struct pblk_g_ctx {

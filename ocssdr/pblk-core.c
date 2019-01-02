@@ -313,7 +313,9 @@ void pblk_free_rqd(struct pblk *pblk, struct nvm_rq *rqd, int type)
 		return;
 	}
        
-	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
+	if (rqd->meta_list) {
+		nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
+	}
 	//dma_free_coherent(ctrl->dev, size, rqd->meta_list, rqd->dma_meta_list); //add by kan
 	mempool_free(rqd, pool);
 }
@@ -2093,6 +2095,11 @@ void pblk_update_map_dev(struct pblk *pblk, sector_t lba,
 #ifdef CONFIG_NVM_DEBUG
 	WARN_ON(!pblk_addr_in_cache(ppa_l2p) && !pblk_ppa_empty(ppa_l2p));
 #endif
+	if(lba < 4) {
+		pr_info("pblk: lba %lu ppa %llu(grp %u pu %u chk %u sec %u)\n", 
+				lba, ppa_mapped.ppa, ppa_mapped.m.grp, ppa_mapped.m.pu, 
+				ppa_mapped.m.chk, ppa_mapped.m.sec);
+	}
 
 	pblk_trans_map_set(pblk, lba, ppa_mapped);
 out:
