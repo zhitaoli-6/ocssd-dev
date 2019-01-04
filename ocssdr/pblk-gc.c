@@ -413,7 +413,7 @@ static void pblk_gc_run(struct pblk *pblk)
 
 	pblk_gc_free_full_lines(pblk);
 
-	pr_info("pblk gc: %s called here\n", __func__);
+	//pr_info("pblk gc: %s called here\n", __func__);
 
 	run_gc = pblk_gc_should_run(&pblk->gc, &pblk->rl);
 	if (!run_gc || (atomic_read(&gc->read_inflight_gc) >= PBLK_GC_L_QD))

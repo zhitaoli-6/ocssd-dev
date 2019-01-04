@@ -64,21 +64,24 @@ public:
 	}
 
 
-	static void read_single(size_t capacity){
+	static void read_data(size_t offset, int page_cnt){
 		int fd = open(DEVICE_NAME, O_RDWR);
 		if (fd < 0) {
 			perror("open");
 			exit(EXIT_FAILURE);
 		}
+		lseek(fd, offset * SECTOR_SIZE, SEEK_SET);
+		/*
+		char *_r_buf = new char[SECTOR_SIZE*page_cnt];
+		ssize_t cnt = read(fd, _r_buf, SECTOR_SIZE*page_cnt);
+		cout << "read page no " << offset  << " ";
+		printf("%ld bytes\n", cnt);
+		*/
 		char *_r_buf = new char[SECTOR_SIZE];
-		int page_cnt = capacity / SECTOR_SIZE;
-		page_cnt = 1;
 		for(int page = 0; page < page_cnt; page++){
-			int sector = page;
-
-			size_t cnt = read(fd, _r_buf, SECTOR_SIZE);
-			cout << "read page no " << page  << " ";
-			cout << (cnt == SECTOR_SIZE ? "pass" : "fail") << endl;
+			ssize_t cnt = read(fd, _r_buf, SECTOR_SIZE);
+			cout << "read page no " << page+offset  << " ";
+			printf("%ld bytes\n", cnt);
 		}
 		close(fd);
 	}
@@ -130,9 +133,7 @@ public:
 			lseek(fd, sector * SECTOR_SIZE, SEEK_SET);
 			int cnt = read(fd, _r_buf, SECTOR_SIZE);
 			cout <<  "write page_no " << page << " ";
-			cout << (cnt == SECTOR_SIZE && memcmp(_w_buf, _r_buf, SECTOR_SIZE) == 0 ? "pass" : "fail") << endl;
-			//if(memcmp(_w_buf, _r_buf, SECTOR_SIZE) != 0) cout << "failed" << endl;
-			//else cout << "passed" << endl;
+			printf("%d %s\n", cnt, memcmp(_w_buf, _r_buf, SECTOR_SIZE) == 0 ? "pass" : "fail");
 		}
 		delete []_w_buf;
 		delete []_r_buf;
@@ -185,7 +186,7 @@ int main()
 	const unsigned int capacity = SECTOR_SIZE * 1024 * 4;
 	Tester tester;
 	//tester.fill_data(capacity, false);
-	tester.read_single(capacity);
-	//tester.check_filled_data(capacity, false);
+	//tester.read_data(2000, 32);
+	tester.check_filled_data(capacity, false);
 	return 0;
 }
