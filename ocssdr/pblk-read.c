@@ -370,11 +370,13 @@ static void pblk_end_io_read_child(struct nvm_rq *child_rqd)
 	struct nvm_tgt_dev *dev = rqd->dev;
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *bio = rqd->bio;
+	int dev_id;
 	if (!dev) {
 		pr_err("pblk: %s rqd undefined dev\n", __func__);
 		dev = pblk->devs[DEFAULT_DEV_ID];
 	}
-	pr_info("pblk: %s callback\n", __func__);
+	dev_id = pblk_get_rq_dev_id(pblk, rqd);
+	pr_info("pblk: %s callback, dev %d\n", __func__, dev_id);
 
 	if (rqd->error)
 		pblk_log_read_err(pblk, rqd);
@@ -648,7 +650,7 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 			}
 		}
 
-		pr_info("pblk: pblk-read.c %s, %d/%d in dev %d\n", 
+		pr_info("pblk: %s, %d/%d in dev[%d]\n", 
 				__func__, nr_child_secs, nr_secs, dev_id);
 
 		// no ppa of dev_id
@@ -693,7 +695,10 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 
 			for (i = 0; i < nr_child_secs; i++) {
 				rqd->ppa_list[i] = ppa_buf[i];
-				//pr_info("pblk: ppa_list[%d] %llu\n", i, ppa_buf[i].ppa);
+				/*
+				pr_info("pblk: child_io %d, ppa_list[%d] %llu\n",
+						dev_id, i, ppa_buf[i].ppa);
+				*/
 			}
 		} else {
 			rqd->ppa_addr = ppa_buf[0];

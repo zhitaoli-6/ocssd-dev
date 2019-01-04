@@ -465,8 +465,12 @@ retry:
 
 static int pblk_schedule_write(struct pblk *pblk){
 	int dev_id;
+#ifdef DEFAULT_SCHEDULE
 	dev_id = DEFAULT_DEV_ID;
-	//dev_id = (pblk->dev_id + 1) % pblk->nr_dev;
+#else
+	dev_id = (pblk->sche_meta.last_dev_id + 1) % pblk->nr_dev;
+	pblk->sche_meta.last_dev_id = dev_id;
+#endif
 	return dev_id;
 }
 
