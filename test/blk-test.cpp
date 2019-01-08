@@ -12,7 +12,10 @@
 #include <time.h>
 #include <errno.h>
 #include <iostream>
+
 using namespace std;
+
+#include "common.h"
 
 #define NR_SECTORS	128
 #define SECTOR_SIZE	(4096)
@@ -27,6 +30,9 @@ using namespace std;
 #define max_elem_value(elem)	\
 	(1 << 8*sizeof(elem))
 
+//#define RAND_DATA
+
+//#define FILL_DATA
 
 class Tester {
 public:
@@ -93,14 +99,20 @@ public:
 			exit(EXIT_FAILURE);
 		}
 		char *_w_buf = new char[SECTOR_SIZE];
+#ifndef RAND_DATA
+		for(int i = 0; i < sizeof(buffer); i++)
+			_w_buf[i] = rand() % 26 + 'a';
+#endif
 		//int page_cnt = capacity/SECTOR_SIZE;
 		int page_cnt = 1;
 		page_cnt = (single ? 1 : capacity/SECTOR_SIZE);
 
-		for(int page = max(0, -128); page < page_cnt; page++){
+		for(int page = 0; page < page_cnt; page++){
 			int sector = page;
+#ifdef RAND_DATA
 			for(int i = 0; i < sizeof(buffer); i++)
 				_w_buf[i] = rand() % 26 + 'a';
+#endif
 			lseek(fd, sector * SECTOR_SIZE, SEEK_SET);
 			size_t cnt = write(fd, _w_buf, SECTOR_SIZE);
 			//fsync(fd);
@@ -122,18 +134,25 @@ public:
 		}
 		char *_w_buf = new char[SECTOR_SIZE];
 		char *_r_buf = new char[SECTOR_SIZE];
+#ifndef RAND_DATA
+		for(int i = 0; i < sizeof(buffer); i++)
+			_w_buf[i] = rand() % 26 + 'a';
+#endif
 		int page_cnt = 1;
 		page_cnt = (single ? 1 : capacity/SECTOR_SIZE);
-		for(int page = max(0, -128); page < page_cnt; page++){
+		for(int page = 0; page < page_cnt; page++){
 			int sector = page;
+#ifdef RAND_DATA
 			for(int i = 0; i < sizeof(buffer); i++)
 				_w_buf[i] = rand() % 26 + 'a';
+#endif
 			//size_t cnt = write(fd, _w_buf, SECTOR_SIZE);
 			//fsync(fd);
 			lseek(fd, sector * SECTOR_SIZE, SEEK_SET);
 			int cnt = read(fd, _r_buf, SECTOR_SIZE);
 			cout <<  "write page_no " << page << " ";
-			printf("%d %s\n", cnt, memcmp(_w_buf, _r_buf, SECTOR_SIZE) == 0 ? "pass" : "fail");
+			cout << endl;
+			//printf("%d %s\n", cnt, memcmp(_w_buf, _r_buf, SECTOR_SIZE) == 0 ? "pass" : "fail");
 		}
 		delete []_w_buf;
 		delete []_r_buf;
@@ -183,10 +202,17 @@ int main()
 
 	//Tester::run();
 	//Tester::run_single(4*1024*1024);
-	const unsigned int capacity = SECTOR_SIZE * 1024 * 4;
+	const unsigned long capacity = 1ll * SECTOR_SIZE * 1024 * 1024;
 	Tester tester;
-	//tester.fill_data(capacity, false);
-	//tester.read_data(2000, 32);
+	struct timeval t1, t2;
+	gettimeofday(&t1, NULL);
+#ifdef FILL_DATA
+	tester.fill_data(capacity, false);
+#else
 	tester.check_filled_data(capacity, false);
+#endif
+	gettimeofday(&t2, NULL);
+	printf("bench: BW %.2fMB/s\n", 1.0 * capacity / 1e6 / TIME(t1, t2));
+	//tester.read_data(2000, 32);
 	return 0;
 }

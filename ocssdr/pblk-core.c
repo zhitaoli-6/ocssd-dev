@@ -476,6 +476,7 @@ void pblk_log_write_err(struct pblk *pblk, struct nvm_rq *rqd)
 void pblk_log_read_err(struct pblk *pblk, struct nvm_rq *rqd)
 {
 	/* Empty page read is not necessarily an error (e.g., L2P recovery) */
+	int dev_id;
 	if (rqd->error == NVM_RSP_ERR_EMPTYPAGE) {
 		atomic_long_inc(&pblk->read_empty);
 		return;
@@ -490,7 +491,8 @@ void pblk_log_read_err(struct pblk *pblk, struct nvm_rq *rqd)
 		atomic_long_inc(&pblk->read_failed);
 		break;
 	default:
-		pr_err("pblk: unknown read error:%d\n", rqd->error);
+		dev_id = pblk_get_rq_dev_id(pblk, rqd);
+		pr_err("pblk: unknown read error:%d, dev_id %d\n", rqd->error, dev_id);
 	}
 #ifdef CONFIG_NVM_DEBUG
 	pblk_print_failed_rqd(pblk, rqd, rqd->error);

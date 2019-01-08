@@ -296,9 +296,9 @@ static void __pblk_end_io_read_md(struct pblk *pblk, struct pblk_md_read_ctx *md
 	int done = atomic_inc_return(&md_r_ctx->completion_cnt);
 	int bio_init_idx = md_r_ctx->bio_init_idx;
 
-	pr_info("pblk: %s: %d/%d done\n", __func__, done, md_r_ctx->nr_child_io);
+	//pr_info("pblk: %s: %d/%d done\n", __func__, done, md_r_ctx->nr_child_io);
 	if (done == md_r_ctx->nr_child_io) {
-		pr_info("pblk: %s: now fill md_bio\n", __func__);
+		//pr_info("pblk: %s: now fill md_bio\n", __func__);
 		// now user read io complete
 		md_rqd = md_r_ctx->rqd;
 		md_bio = md_rqd->bio;
@@ -375,8 +375,8 @@ static void pblk_end_io_read_child(struct nvm_rq *child_rqd)
 		pr_err("pblk: %s rqd undefined dev\n", __func__);
 		dev = pblk->devs[DEFAULT_DEV_ID];
 	}
-	dev_id = pblk_get_rq_dev_id(pblk, rqd);
-	pr_info("pblk: %s callback, dev %d\n", __func__, dev_id);
+	//dev_id = pblk_get_rq_dev_id(pblk, rqd);
+	//pr_info("pblk: %s callback, dev %d\n", __func__, dev_id);
 
 	if (rqd->error)
 		pblk_log_read_err(pblk, rqd);
@@ -616,7 +616,7 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 	int dev_id, i;
 	int ret = NVM_IO_ERR;
 
-	pr_info("pblk: %s nr_holes %d, nr_secs %d\n", __func__, nr_holes, nr_secs);
+	//pr_info("pblk: %s nr_holes %d, nr_secs %d\n", __func__, nr_holes, nr_secs);
 
 	// fill md_r_ctx
 	for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
@@ -632,7 +632,7 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 	md_r_ctx->rqd = md_rqd;
 	md_r_ctx->nr_child_io = nr_child_io;
 	atomic_set(&md_r_ctx->completion_cnt, 0);
-	pr_info("pblk: %s: nr_child_io %d\n", __func__, nr_child_io);
+	//pr_info("pblk: %s: nr_child_io %d\n", __func__, nr_child_io);
 
 	// fill each child_io
 	//for (dev_id = 0; dev_id < 1; dev_id++) {
@@ -650,8 +650,10 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 			}
 		}
 
+		/*
 		pr_info("pblk: %s, %d/%d in dev[%d]\n", 
 				__func__, nr_child_secs, nr_secs, dev_id);
+		*/
 
 		// no ppa of dev_id
 		if (!nr_child_secs) 
@@ -778,7 +780,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	unsigned long read_bitmap; /* Max 64 ppas per request */
 	int ret = NVM_IO_ERR;
 
-	pr_info("pblk: %s blba %lu, nr_secs %u\n", __func__, blba, nr_secs);
+	//pr_info("pblk: %s blba %lu, nr_secs %u\n", __func__, blba, nr_secs);
 
 	/* logic error: lba out-of-bounds. Ignore read request */
 	if (blba >= pblk->rl.nr_secs || nr_secs > PBLK_MAX_REQ_ADDRS) {
@@ -829,7 +831,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		return NVM_IO_OK;
 	}
 	struct nvm_rq *ret_rqd;
-	pr_info("pblk: pblk-read.c %s: async_read called\n", __func__);
+	//pr_info("pblk: pblk-read.c %s: async_read called\n", __func__);
 	return pblk_submit_read_bio_md_async(pblk, rqd, md_r_ctx, &ret_rqd);
 
 	// community read path
