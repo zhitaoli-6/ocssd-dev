@@ -463,17 +463,6 @@ retry:
 	return meta_line;
 }
 
-static int pblk_schedule_write(struct pblk *pblk){
-	int dev_id;
-#ifdef DEFAULT_SCHEDULE
-	dev_id = DEFAULT_DEV_ID;
-#else
-	dev_id = (pblk->sche_meta.last_dev_id + 1) % pblk->nr_dev;
-	pblk->sche_meta.last_dev_id = dev_id;
-#endif
-	return dev_id;
-}
-
 static int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd, int dev_id)
 {
 	struct ppa_addr erase_ppa;
@@ -534,6 +523,175 @@ static void pblk_free_write_rqd(struct pblk *pblk, struct nvm_rq *rqd)
 							c_ctx->nr_padded);
 }
 
+static int pblk_schedule_write(struct pblk *pblk) 
+{
+	int dev_id = -1;
+	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
+	struct pblk_md_line_group *group = set->lines_groups[set->cur_group];
+	int *unit_id_ptr = &pblk->sche_meta.unit_id;
+	switch (pblk->md_mode) {
+		case PBLK_SD:
+			dev_id = DEFAULT_DEV_ID;
+			break;
+		case PBLK_RAID1:
+			dev_id = group->lines_units[*unit_id_ptr].dev_id;
+			break;
+		case PBLK_RAID0:
+			dev_id = group->lines_units[*unit_id_ptr].dev_id;
+			*unit_id_ptr = (*unit_id_ptr+1) % group->nr_unit;
+			break;
+		case PBLK_RAID5:
+			dev_id = group->lines_units[*unit_id_ptr].dev_id;
+			*unit_id_ptr = (*unit_id_ptr+1) % group->nr_unit;
+			break;
+		default:
+			pr_err("pblk: schedule_write unexpected pblk md_mode\n");
+	}
+	return dev_id;
+}
+
+static int pblk_submit_raid1_write(struct pblk *pblk, unsigned long pos, 
+		unsigned int secs_to_sync, unsigned int secs_avail)
+{
+	struct nvm_rq *rqd;
+	struct bio *bio;
+	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
+	struct pblk_md_line_group *group = set->lines_groups[set->cur_group];	
+	int unit_id = pblk->sche_meta.unit_id;
+	int dev_id;
+	bool set_flag;
+
+	for (unit_id++; unit_id < group->nr_unit; unit_id++) {
+		dev_id = group->lines_units[unit_id].dev_id;
+
+		bio = bio_alloc(GFP_KERNEL, secs_to_sync);
+		bio->bi_iter.bi_sector = 0; /* internal bio */
+		bio_set_op_attrs(bio, REQ_OP_WRITE, 0);
+
+		rqd = pblk_alloc_rqd(pblk, PBLK_WRITE);
+		rqd->bio = bio;
+		rqd->dev = pblk->devs[dev_id];
+
+		if (unit_id == group->nr_unit - 1) {
+			set_flag = true;
+		} else {
+			set_flag = false;
+		}
+
+		if (pblk_rb_read_to_bio(&pblk->rwb, rqd, pos, secs_to_sync,
+									secs_avail, set_flag)) {
+			pr_err("pblk: corrupted write bio\n");
+			goto fail_put_bio;
+		}
+
+		if (pblk_submit_io_set(pblk, rqd, dev_id))
+			goto fail_free_bio;
+
+#ifdef CONFIG_NVM_DEBUG
+		atomic_long_add(secs_to_sync, &pblk->sub_writes);
+#endif
+	}
+	return 0;
+fail_free_bio:
+	pblk_free_write_rqd(pblk, rqd);
+fail_put_bio:
+	bio_put(bio);
+	pblk_free_rqd(pblk, rqd, PBLK_WRITE);
+	return 1;
+}
+
+static int pblk_submit_raid5_write(struct pblk *pblk, unsigned long pos,
+		unsigned int secs_to_sync, unsigned int secs_avail) 
+{
+	struct pblk_rb *rb = pblk->rwb;
+
+	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
+	struct pblk_md_line_group *group = set->lines_groups[set->cur_group];	
+	int unit_id = pblk->sche_meta.unit_id;
+
+	struct nvm_rq *rqd;
+	struct bio *bio;
+	int dev_id;
+
+	unsigned int pad = secs_to_sync - secs_avail;
+	unsigned int to_read = secs_avail;
+
+	
+	unsigned int size = PAGE_SIZE / sizeof(unsigned long);
+	unsigned long *parity = set->parity;
+	unsigned long *data;
+
+	unsigned int i, j;
+
+	// update parity or submit parity
+	if (unit_id < group->nr_unit-1) {
+		for (i = 0; i < to_read; i++) {
+			entry = &rb->entries[pos];
+			data = entry->data;
+			
+			for (j = 0; j < size; j++) {
+				parity[j] ^= data[j];
+			}
+		}
+	} else {
+		dev_id = group->lines_units[unit_id].dev_id;
+		pblk->sche_meta.unit_id = 0;
+
+		unsigned  long data_len = PAGE_SIZE * pblk->min_write_pgs;
+		void *buf = vmalloc(data_len);
+		if (!buf) {
+			pr_err("pblk: could not alloc buf for parity\n");
+			return 1;
+		}
+		memcpy(buf, parity, data_len);
+
+		bio = pblk_bio_map_addr(pblk, buf, secs_to_sync, data_len, 
+				PBLK_VMALLOC_META, GFP_KERNEL, dev_id);
+		bio->bi_iter.bi_sector = 0;
+		bio_set_op_attrs(bio, REQ_OP_WRITE, 0);
+
+		rqd = pblk_alloc_rqd(pblk, PBLK_WRITE);
+		rqd->bio = bio;
+		rqd->dev = pblk->devs[dev_id];
+
+		if (unit_id == group->nr_unit - 1) {
+			set_flag = true;
+		} else {
+			set_flag = false;
+		}
+
+		// parity end_io callback function???
+		if (pblk_submit_io_set(pblk, rqd, dev_id))
+			goto fail_free_bio;
+	}
+	return ret;
+}
+
+static int pblk_submit_md_write(struct pblk *pblk, unsigned long pos, 
+		unsigned int secs_to_sync, unsigned int secs_avail)
+{
+	int ret;
+	
+	if (secs_to_sync != pblk->min_write_pgs) {
+		pr_err("pblk: %s inconsistent sync %u, min_pgs %u\n", __func__,
+				secs_to_sync, pblk->min_write_pgs);
+		return 1;
+	}
+
+
+	switch (pblk->md_mode) {
+		case PBLK_RAID1:
+			ret = pblk_submit_raid1_write(pblk, pos, secs_to_sync, secs_avail);
+			break;
+		case PBLK_RAID5:
+			ret = pblk_submit_raid5_write();
+			break;
+		default:
+			ret = 0;
+	}
+	return ret;
+}
+
 static int pblk_submit_write(struct pblk *pblk)
 {
 	struct bio *bio;
@@ -542,6 +700,7 @@ static int pblk_submit_write(struct pblk *pblk)
 	unsigned int secs_to_flush;
 	unsigned long pos;
 	int dev_id;
+	bool set_flag;
 
 	/* If there are no sectors in the cache, flushes (bios without data)
 	 * will be cleared on the cache threads
@@ -563,20 +722,25 @@ static int pblk_submit_write(struct pblk *pblk)
 	secs_to_com = (secs_to_sync > secs_avail) ? secs_avail : secs_to_sync;
 	pos = pblk_rb_read_commit(&pblk->rwb, secs_to_com);
 
-	bio = bio_alloc(GFP_KERNEL, secs_to_sync);
+	// decide which device of this IO
+	dev_id = pblk_schedule_write(pblk);
 
+	bio = bio_alloc(GFP_KERNEL, secs_to_sync);
 	bio->bi_iter.bi_sector = 0; /* internal bio */
 	bio_set_op_attrs(bio, REQ_OP_WRITE, 0);
 
 	rqd = pblk_alloc_rqd(pblk, PBLK_WRITE);
 	rqd->bio = bio;
-	
-	// md-bugs: select one device
-	dev_id = pblk_schedule_write(pblk);
 	rqd->dev = pblk->devs[dev_id];
 
+	if (pblk->md_mode == PBLK_RAID1 || pblk->md_mode == PBLK_RAID5) {
+		set_flag = false;
+	} else {
+		set_flag = true;
+	}
+
 	if (pblk_rb_read_to_bio(&pblk->rwb, rqd, pos, secs_to_sync,
-								secs_avail)) {
+								secs_avail, set_flag)) {
 		pr_err("pblk: corrupted write bio\n");
 		goto fail_put_bio;
 	}
@@ -588,8 +752,13 @@ static int pblk_submit_write(struct pblk *pblk)
 	atomic_long_add(secs_to_sync, &pblk->sub_writes);
 #endif
 
-	return 0;
+	if (pblk_submit_md_write(pblk, pos, secs_to_sync, secs_avail)) {
+		goto fail_md;
+	}
 
+	return 0;
+fail_md:
+	pr_err("pblk: %s fail md write submission\n", __func__);
 fail_free_bio:
 	pblk_free_write_rqd(pblk, rqd);
 fail_put_bio:

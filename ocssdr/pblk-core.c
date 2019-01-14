@@ -287,11 +287,18 @@ void pblk_free_rqd(struct pblk *pblk, struct nvm_rq *rqd, int type)
 {
 	int dev_id = pblk_get_rq_dev_id(pblk, rqd);
 	struct nvm_tgt_dev * dev;
-	if(dev_id == -1){
+	if (dev_id == -1){
 		//WARN(1, "free rqd with undefined dev\n");
 		pr_info("pblk: free rqd without dev info, DEFAULT_DEV_ID %d used", DEFAULT_DEV_ID);
 		dev_id = DEFAULT_DEV_ID;
 	}
+
+#ifdef DEFAULT_SCHEDULE
+	if (dev_id != DEFAULT_DEV_ID) {
+		pr_err("pblk: free rqd inconsistent with DEFAULT_DEV_ID\n");
+	}
+#endif
+
 	dev = pblk->devs[dev_id];
 	//struct nvm_tgt_dev *dev = pblk->dev;
 	mempool_t *pool;
@@ -313,9 +320,8 @@ void pblk_free_rqd(struct pblk *pblk, struct nvm_rq *rqd, int type)
 		return;
 	}
        
-	if (rqd->meta_list) {
+	if (rqd->meta_list)
 		nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
-	}
 	//dma_free_coherent(ctrl->dev, size, rqd->meta_list, rqd->dma_meta_list); //add by kan
 	mempool_free(rqd, pool);
 }

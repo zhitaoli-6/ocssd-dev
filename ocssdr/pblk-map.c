@@ -42,6 +42,7 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 
 		line = pblk_line_replace_data(pblk, line->dev_id);
 		pblk_line_close_meta(pblk, prev_line);
+		// if this line is full, then other lines in the same group all are full
 	}
 
 	emeta = line->emeta;

@@ -116,6 +116,8 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 	if (factory_init) {
 		pblk_setup_uuid(pblk);
 	} else {
+		pr_err("pblk: now l2p can not be recovered\n");
+		return -EFAULT;
 		line = pblk_recov_l2p(pblk);
 		if (IS_ERR(line)) {
 			pr_err("pblk: could not recover l2p table\n");
@@ -132,12 +134,17 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 
 	if (!line) {
 		/* Configure next line for user data */
+		struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
+		struct pblk_md_line_group *group = &set->lines_groups[set->cur_group];
+		group->nr_unit = pblk->nr_dev;
 		for(dev_id = 0; dev_id < pblk->nr_dev; dev_id++){
 			line = pblk_line_get_first_data(pblk, dev_id);
 			if (!line) {
 				pr_err("pblk: line list corrupted at dev_id %d\n", dev_id);
 				return -EFAULT;
 			}
+			group->lines_units[dev_id].dev_id = dev_id;
+			group->lines_units[dev_id].line_id = line->line_id;
 		}
 	}
 
@@ -1134,10 +1141,48 @@ fail_free_meta:
 	return ret;
 }
 
+static int pblk_line_group_init(struct pblk *pblk, int mode) {
+	int ret = 0;
+	switch (mode) {
+		case PBLK_SD:
+			if (pblk->nr_dev != 1) {
+				pr_info("pblk: PBLK_SD need 1 devices while %d given, use %d as default\n", 
+						pblk->nr_dev, DEFAULT_DEV_ID);
+			}
+			break;
+		case PBLK_RAID0:
+		case PBLK_RAID1:
+			if (pblk->nr_dev < 2){
+				pr_err("pblk: PBLK_RAID0 or PBLK_RAID1 need at least 2 devices\n");
+				ret = -1;
+			}
+			break;
+		case PBLK_RAID5:
+			if (pblk->nr_dev <= 2) {
+				pr_err("pblk: PBLK_RAID5 need at least 3 devices\n");
+				ret = -1;
+			}
+			break;
+		default:
+			pr_err("pblk: not supported running mode %d\n", mode);
+			ret = -1;
+	}
+
+	if (!ret) {
+		pblk->md_mode = mode;
+		struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
+		set->nr_group = pblk->l_mg[DEFAULT_DEV_ID].nr_lines;
+		set->cur_group = 0;
+		set->line_groups = kcalloc(set->nr_group, sizeof(struct pblk_md_line_group), GFP_KERNEL);
+		set->parity = kzalloc(PBLK_EXPOSED_PAGE_SIZE * pblk->min_write_pgs, GFP_KERNEL);;
+	}
+	return ret;
+}
+
 
 static int pblk_scheduler_init(struct pblk *pblk){
 	// md-todo
-	pblk->sche_meta.last_dev_id = -1;
+	pblk->sche_meta.unit_id = 0;
 	return 0;
 }
 
@@ -1235,7 +1280,6 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	struct pblk *pblk;
 	int ret;
 
-
 	pr_info("pblk: dev[0] OCSSD version %d\n", geo->version);
 	ret = pblk_check_geos(devs, nr_dev);
 	if(ret){
@@ -1309,10 +1353,17 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	}
 	pr_info("pblk: done pblk_lines_init\n");
 
+	ret = pblk_line_group_init(pblk, PBLK_RAID1);
+	if (ret) {
+		pr_err("pblk: could not initialize md line group\n");
+		goto fail_free_lines;
+	}
+	pr_info("pblk: done pblk_line_group_init\n");
+
 	ret = pblk_rwb_init(pblk);
 	if (ret) {
 		pr_err("pblk: could not initialize write buffer\n");
-		goto fail_free_lines;
+		goto fail_free_line_group;
 	}
 	pr_info("pblk: done pblk_rwb_init\n");
 	//ret = -EINVAL;
@@ -1385,6 +1436,8 @@ fail_free_l2p:
 	pblk_l2p_free(pblk);
 fail_free_rwb:
 	pblk_rwb_free(pblk);
+fail_free_line_group:
+	kfree(pblk->md_line_group_set.line_groups);
 fail_free_lines:
 	pblk_lines_free(pblk);
 fail_free_core:

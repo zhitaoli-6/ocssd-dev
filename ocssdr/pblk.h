@@ -57,8 +57,8 @@
 
 #define PBLK_DEFAULT_OP (21)
 
-//#define DEFAULT_SCHEDULE
-#define DEFAULT_DEV_ID (0)
+#define DEFAULT_SCHEDULE
+#define DEFAULT_DEV_ID (1)
 
 //#define META_READ
 
@@ -589,16 +589,6 @@ struct pblk_dev_perf_info {
 	unsigned int sche_io;
 };
 
-struct pblk_dev_age_info {
-	int wi; // wear-levelling index
-};
-
-struct pblk_schedule_meta {
-	struct pblk_dev_perf_info *perf_info;
-	struct pblk_dev_age_info *age_info;
-	int last_dev_id;
-};
-
 enum {
 	PBLK_STATE_RUNNING = 0,
 	PBLK_STATE_STOPPING = 1,
@@ -618,6 +608,42 @@ struct pblk_addrf {
 	int sec_ws_stripe;
 };
 
+
+// PBLK multiple devices related strategy
+struct pblk_dev_age_info {
+	int wi; // wear-levelling index
+};
+
+struct pblk_schedule_meta {
+	struct pblk_dev_perf_info *perf_info;
+	struct pblk_dev_age_info *age_info;
+	int unit_id;
+};
+
+struct pblk_md_line_unit {
+	int dev_id;
+	int line_id;
+};
+
+struct pblk_md_line_group {
+	int nr_unit;
+	struct pblk_md_line_unit line_units[NVM_MD_MAX_DEV_CNT];
+};
+
+struct pblk_md_line_group_set {
+	int nr_group;
+	int cur_group;
+	struct pblk_md_line_group *line_groups;
+	void *parity;
+};
+
+enum {
+	PBLK_SD = 0,
+	PBLK_RAID0 = 10
+	PBLK_RAID1 = 11,
+	PBLK_RAID5 = 15,
+};
+
 struct pblk {
 	struct nvm_tgt_dev **devs;
 	int nr_dev;
@@ -631,7 +657,11 @@ struct pblk {
 	struct pblk_line **lines;		/* Line array */
 	struct pblk_line_mgmt *l_mg;		/* Line management */
 	struct pblk_line_meta lm;		/* Line metadata */
+
+	// schedule write
 	struct pblk_schedule_meta sche_meta; /* Scheduler infomation */
+	struct pblk_md_line_group_set md_line_group_set;
+	int md_mode;
 
 	struct nvm_addrf addrf;		/* Aligned address format */
 	struct pblk_addrf uaddrf;	/* Unaligned address format */

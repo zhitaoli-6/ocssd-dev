@@ -552,11 +552,11 @@ out:
  */
 unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct nvm_rq *rqd,
 				 unsigned int pos, unsigned int nr_entries,
-				 unsigned int count)
+				 unsigned int count, bool set_flag)
 {
 	struct pblk *pblk = container_of(rb, struct pblk, rwb);
 	int dev_id = pblk_get_rq_dev_id(pblk, rqd);
-	if(dev_id == -1){
+	if (dev_id == -1) {
 		pr_err("pblk: %s: undefined rqd dev_id\n", __func__);
 		return NVM_IO_ERR;
 	}
@@ -594,29 +594,34 @@ try:
 		page = virt_to_page(entry->data);
 		if (!page) {
 			pr_err("pblk: could not allocate write bio page\n");
-			flags &= ~PBLK_WRITTEN_DATA;
-			flags |= PBLK_SUBMITTED_ENTRY;
-			/* Release flags on context. Protect from writes */
-			smp_store_release(&entry->w_ctx.flags, flags);
+			if (set_flag) {
+				flags &= ~PBLK_WRITTEN_DATA;
+				flags |= PBLK_SUBMITTED_ENTRY;
+				/* Release flags on context. Protect from writes */
+				smp_store_release(&entry->w_ctx.flags, flags);
+			}
 			return NVM_IO_ERR;
 		}
 
 		if (bio_add_pc_page(q, bio, page, rb->seg_size, 0) !=
 								rb->seg_size) {
 			pr_err("pblk: could not add page to write bio\n");
-			flags &= ~PBLK_WRITTEN_DATA;
-			flags |= PBLK_SUBMITTED_ENTRY;
-			/* Release flags on context. Protect from writes */
-			smp_store_release(&entry->w_ctx.flags, flags);
+			if (set_flag) {
+				flags &= ~PBLK_WRITTEN_DATA;
+				flags |= PBLK_SUBMITTED_ENTRY;
+				/* Release flags on context. Protect from writes */
+				smp_store_release(&entry->w_ctx.flags, flags);
+			}
 			return NVM_IO_ERR;
 		}
 
-		flags &= ~PBLK_WRITTEN_DATA;
-		flags |= PBLK_SUBMITTED_ENTRY;
+		if (set_flag) {
+			flags &= ~PBLK_WRITTEN_DATA;
+			flags |= PBLK_SUBMITTED_ENTRY;
 
-		/* Release flags on context. Protect from writes */
-		smp_store_release(&entry->w_ctx.flags, flags);
-
+			/* Release flags on context. Protect from writes */
+			smp_store_release(&entry->w_ctx.flags, flags);
+		}
 		pos = (pos + 1) & (rb->nr_entries - 1);
 	}
 

@@ -730,6 +730,7 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 
 prepare_err:
 	pblk_bio_free_pages(pblk, bio, 0, nr_child_secs);
+	bio_put(bio);
 	pblk_free_rqd(pblk, rqd, PBLK_READ);
 	return NVM_IO_ERR;
 fail_submission:
