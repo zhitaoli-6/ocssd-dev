@@ -560,6 +560,7 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct nvm_rq *rqd,
 		pr_err("pblk: %s: undefined rqd dev_id\n", __func__);
 		return NVM_IO_ERR;
 	}
+
 	struct request_queue *q = pblk->devs[dev_id]->q;
 	struct pblk_c_ctx *c_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *bio = rqd->bio;
@@ -577,6 +578,13 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct nvm_rq *rqd,
 	c_ctx->sentry = pos;
 	c_ctx->nr_valid = to_read;
 	c_ctx->nr_padded = pad;
+	c_ctx->cpl = pblk->md_line_group_set.cpl;
+	if (pblk->md_mode == PBLK_RAID5) {
+		c_ctx->md_id = pblk->sche_meta.unit_id - 1;
+		if (c_ctx->md_id < 0) {
+			pr_err("pblk: %s negative md_id %d\n", c_ctx->md_id);
+		}
+	}
 
 	for (i = 0; i < to_read; i++) {
 		entry = &rb->entries[pos];

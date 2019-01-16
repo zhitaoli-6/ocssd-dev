@@ -59,6 +59,10 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 
 	bio_put(rqd->bio);
 	pblk_free_rqd(pblk, rqd, PBLK_WRITE);
+	
+	if (pblk->md_mode == PBLK_RAID1 || pblk->md_mode == PBLK_RAID5) {
+		kfree(c_ctx->cpl);
+	}
 
 	return ret;
 }
@@ -71,12 +75,38 @@ static unsigned long pblk_end_queued_w_bio(struct pblk *pblk,
 	return pblk_end_w_bio(pblk, rqd, c_ctx);
 }
 
-static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
+static void pblk_write_cpl_sync_rb(struct pblk *pblk, struct nvm_rq *rqd,
 				struct pblk_c_ctx *c_ctx)
 {
 	struct pblk_c_ctx *c, *r;
 	unsigned long flags;
 	unsigned long pos;
+	pos = pblk_rb_sync_init(&pblk->rwb, &flags);
+	if (pos == c_ctx->sentry) {
+		pos = pblk_end_w_bio(pblk, rqd, c_ctx);
+
+retry:
+		list_for_each_entry_safe(c, r, &pblk->compl_list, list) {
+			rqd = nvm_rq_from_c_ctx(c);
+			if (c->sentry == pos) {
+				pos = pblk_end_queued_w_bio(pblk, rqd, c);
+				goto retry; 
+			}
+		}
+	} else {
+		WARN_ON(nvm_rq_from_c_ctx(c_ctx) != rqd);
+		list_add_tail(&c_ctx->list, &pblk->compl_list);
+	}
+	pblk_rb_sync_end(&pblk->rwb, &flags);
+}
+
+static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
+				struct pblk_c_ctx *c_ctx)
+{
+	struct pblk_md_cpl *cpl = c_ctx->cpl;
+	struct nvm_rq *tmp_rqd;
+	unsigned int done = 0;
+	int md_id;
 	int dev_id;
 	dev_id = pblk_get_rq_dev_id(pblk, rqd);
 	WARN_ON(dev_id == -1);
@@ -90,24 +120,52 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 #endif
 
 	pblk_up_rq(pblk, rqd->ppa_list, rqd->nr_ppas, c_ctx->lun_bitmap, dev_id);
-
-	pos = pblk_rb_sync_init(&pblk->rwb, &flags);
-	if (pos == c_ctx->sentry) {
-		pos = pblk_end_w_bio(pblk, rqd, c_ctx);
-
-retry:
-		list_for_each_entry_safe(c, r, &pblk->compl_list, list) {
-			rqd = nvm_rq_from_c_ctx(c);
-			if (c->sentry == pos) {
-				pos = pblk_end_queued_w_bio(pblk, rqd, c);
-				goto retry;
-			}
+	
+	if (pblk->md_mode == PBLK_RAID1) {
+		done = atomic_inc_return(&cpl->completion_cnt);
+		if (done < cpl->nr_io) {
+			list_add_tail(&c_ctx->list, &cpl->cpl_list);
+			return;
 		}
-	} else {
-		WARN_ON(nvm_rq_from_c_ctx(c_ctx) != rqd);
-		list_add_tail(&c_ctx->list, &pblk->compl_list);
+
+		done = 1;
+		// free bio/rqd
+		list_for_each_entry(c, &cpl->cpl_list,list) {
+			tmp_rqd = nvm_rq_from_c_ctx(c);
+			if (c->nr_padded)
+				pblk_bio_free_pages(pblk, tmp_rqd->bio, c->nr_valid,
+									c->nr_padded);
+			bio_put(tmp_rqd->bio);
+			pblk_free_rqd(pblk, rqd, PBLK_WRITE);
+
+			done++;
+		}
+		if (done != cpl->nr_io) {
+			pr_err("pblk: %s PBLK_RAID1 inconsistent done %u with nr_io %u\n"
+					__func__, done, cpl->nr_io);
+		}
+
+		pblk_write_cpl_sync_rb(pblk, rqd, c_ctx);
+	} else if (pblk->md_mode == PBLK_RAID5) {
+		md_id = c_ctx->md_id;
+		WARN_ON(test_and_set_bit(md_id, &cpl->cpl_map));
+		list_add_tail(&c_ctx->list, &cpl->cpl_list);
+		if (!bitmap_full(&cpl->cpl_map, cpl->nr_io)) {
+			return;
+		}
+		list_for_each_entry(c, &cpl->cpl_list,list) {
+			tmp_rqd = nvm_rq_from_c_ctx(c);
+			if (c->md_id == cpl->nr_io - 1) {
+				if (c->nr_padded)
+					pblk_bio_free_pages(pblk, tmp_rqd->bio, c->nr_valid,
+										c->nr_padded);
+				bio_put(tmp_rqd->bio);
+				pblk_free_rqd(pblk, rqd, PBLK_WRITE);
+				continue;
+			}
+			pblk_write_cpl_sync_rb(pblk, tmp_rqd, c);
+		}
 	}
-	pblk_rb_sync_end(&pblk->rwb, &flags);
 }
 
 /* When a write fails, we are not sure whether the block has grown bad or a page
@@ -550,6 +608,22 @@ static int pblk_schedule_write(struct pblk *pblk)
 	return dev_id;
 }
 
+static void pblk_md_new_stripe(struct pblk *pblk, bool clear)
+{
+	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
+
+	if (clear)
+		memset(set->parity, 0, PAGE_SIZE*pblk->min_write_pgs);
+
+	set->cpl = kzalloc(sizeof(struct pblk_md_cpl), GFP_KERNEL);
+
+	set->cpl->nr_io = set->lines_group[set->cur_group].nr_unit;
+	INIT_LIST_HEAD(&set->cpl->cpl_list);
+	bitmap_zero(&set->cpl->cpl_map, set->cpl->nr_io);
+	
+	pblk->sche_meta.unit_id = 0;
+}
+
 static int pblk_submit_raid1_write(struct pblk *pblk, unsigned long pos, 
 		unsigned int secs_to_sync, unsigned int secs_avail)
 {
@@ -591,6 +665,7 @@ static int pblk_submit_raid1_write(struct pblk *pblk, unsigned long pos,
 		atomic_long_add(secs_to_sync, &pblk->sub_writes);
 #endif
 	}
+	pblk_md_new_stripe(pblk, false);
 	return 0;
 fail_free_bio:
 	pblk_free_write_rqd(pblk, rqd);
@@ -610,6 +685,7 @@ static int pblk_submit_raid5_write(struct pblk *pblk, unsigned long pos,
 	int unit_id = pblk->sche_meta.unit_id;
 
 	struct nvm_rq *rqd;
+	struct pblk_c_ctx *c_ctx;
 	struct bio *bio;
 	int dev_id;
 
@@ -622,22 +698,28 @@ static int pblk_submit_raid5_write(struct pblk *pblk, unsigned long pos,
 	unsigned long *data;
 
 	unsigned int i, j;
+	int ret = 0;
 
 	// update parity or submit parity
-	if (unit_id < group->nr_unit-1) {
-		for (i = 0; i < to_read; i++) {
-			entry = &rb->entries[pos];
-			data = entry->data;
-			
-			for (j = 0; j < size; j++) {
-				parity[j] ^= data[j];
-			}
+	for (i = 0; i < to_read; i++) {
+		entry = &rb->entries[pos];
+		data = entry->data;
+		
+		for (j = 0; j < size; j++) {
+			parity[i*size + j] ^= data[j];
 		}
-	} else {
+		pos = (pos + 1) & (pblk->nr_entries - 1);
+	}
+	// assume pad vales are 0. todo
+	for (i = 0; i < pad; i++) {
+		for (j = 0; j < size; j++) {
+			parity[to_read*size + i*size + j] ^= 0;
+		}
+	}
+	if (unit_id == group->nr_unit-1) {
 		dev_id = group->lines_units[unit_id].dev_id;
-		pblk->sche_meta.unit_id = 0;
 
-		unsigned  long data_len = PAGE_SIZE * pblk->min_write_pgs;
+		unsigned long data_len = PAGE_SIZE * pblk->min_write_pgs;
 		void *buf = vmalloc(data_len);
 		if (!buf) {
 			pr_err("pblk: could not alloc buf for parity\n");
@@ -654,17 +736,25 @@ static int pblk_submit_raid5_write(struct pblk *pblk, unsigned long pos,
 		rqd->bio = bio;
 		rqd->dev = pblk->devs[dev_id];
 
-		if (unit_id == group->nr_unit - 1) {
-			set_flag = true;
-		} else {
-			set_flag = false;
-		}
+		c_ctx = nvm_rq_to_pdu(rqd);
+		c_ctx->sentry = pos;
+		c_ctx->nr_padded = 0;
+		c_ctx->nr_valid = pblk->min_write_pgs;
+		c_ctx->md_id = unit_id;
+		c_ctx->cpl = set->cpl;
 
 		// parity end_io callback function???
 		if (pblk_submit_io_set(pblk, rqd, dev_id))
 			goto fail_free_bio;
+
+		pblk_md_new_stripe(pblk, true);
+		return 0;
+fail_free_bio:
+		bio_put(bio);
+		pblk_free_rqd(pblk, rqd, PBLK_WRITE);
+		return 1;
 	}
-	return ret;
+	return 0;
 }
 
 static int pblk_submit_md_write(struct pblk *pblk, unsigned long pos, 
@@ -678,13 +768,12 @@ static int pblk_submit_md_write(struct pblk *pblk, unsigned long pos,
 		return 1;
 	}
 
-
 	switch (pblk->md_mode) {
 		case PBLK_RAID1:
 			ret = pblk_submit_raid1_write(pblk, pos, secs_to_sync, secs_avail);
 			break;
 		case PBLK_RAID5:
-			ret = pblk_submit_raid5_write();
+			ret = pblk_submit_raid5_write(pblk, pos, secs_to_sync, secs_avail);
 			break;
 		default:
 			ret = 0;
@@ -733,7 +822,7 @@ static int pblk_submit_write(struct pblk *pblk)
 	rqd->bio = bio;
 	rqd->dev = pblk->devs[dev_id];
 
-	if (pblk->md_mode == PBLK_RAID1 || pblk->md_mode == PBLK_RAID5) {
+	if (pblk->md_mode == PBLK_RAID1) {
 		set_flag = false;
 	} else {
 		set_flag = true;

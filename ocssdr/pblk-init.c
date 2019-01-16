@@ -146,6 +146,15 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 			group->lines_units[dev_id].dev_id = dev_id;
 			group->lines_units[dev_id].line_id = line->line_id;
 		}
+
+		// first md stripe
+		set->cpl->nr_io = group->nr_unit;
+		if (pblk->md_mode == PBLK_RAID1) {
+			atomic_set(&set->cpl->completion_cnt, 0);
+		} else if(pblk->md_mode == PBLK_RAID5) {
+			bitmap_zero(&set->cpl->cpl_map, set->cpl.nr_io);
+		}
+		INIT_LIST_HEAD(&set->cpl->cpl_list);
 	}
 
 	return 0;
@@ -1174,7 +1183,9 @@ static int pblk_line_group_init(struct pblk *pblk, int mode) {
 		set->nr_group = pblk->l_mg[DEFAULT_DEV_ID].nr_lines;
 		set->cur_group = 0;
 		set->line_groups = kcalloc(set->nr_group, sizeof(struct pblk_md_line_group), GFP_KERNEL);
+
 		set->parity = kzalloc(PBLK_EXPOSED_PAGE_SIZE * pblk->min_write_pgs, GFP_KERNEL);;
+		set->cpl = kzalloc(sizeof(struct pblk_md_cpl), GFP_KERNEL);
 	}
 	return ret;
 }

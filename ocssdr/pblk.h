@@ -112,6 +112,14 @@ enum {
 #define pblk_dma_meta_size (sizeof(struct pblk_sec_meta) * PBLK_MAX_REQ_ADDRS)
 #define pblk_dma_ppa_size (sizeof(u64) * PBLK_MAX_REQ_ADDRS)
 
+struct pblk_md_cpl {
+	union {
+		atomic_t completion_cnt;
+		unsigned int cpl_map;
+	};
+	unsigned int nr_io;
+};
+
 /* write buffer completion context */
 struct pblk_c_ctx {
 	struct list_head list;		/* Head for out-of-order completion */
@@ -120,6 +128,9 @@ struct pblk_c_ctx {
 	unsigned int sentry;
 	unsigned int nr_valid;
 	unsigned int nr_padded;
+
+	int md_id; /* index in md stripe */
+	struct pblk_md_cpl *cpl; /* completion info of md write */
 };
 
 /* multiple devices read context */
@@ -635,6 +646,7 @@ struct pblk_md_line_group_set {
 	int cur_group;
 	struct pblk_md_line_group *line_groups;
 	void *parity;
+	struct pblk_md_cpl *cpl; /* completion info */
 };
 
 enum {
