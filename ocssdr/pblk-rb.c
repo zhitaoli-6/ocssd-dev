@@ -582,7 +582,8 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct nvm_rq *rqd,
 	if (pblk->md_mode == PBLK_RAID5) {
 		c_ctx->md_id = pblk->sche_meta.unit_id - 1;
 		if (c_ctx->md_id < 0) {
-			pr_err("pblk: %s negative md_id %d\n", c_ctx->md_id);
+			pr_err("pblk: %s negative md_id %d\n",
+					__func__, c_ctx->md_id);
 		}
 	}
 

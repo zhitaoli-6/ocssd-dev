@@ -135,7 +135,7 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 	if (!line) {
 		/* Configure next line for user data */
 		struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
-		struct pblk_md_line_group *group = &set->lines_groups[set->cur_group];
+		struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
 		group->nr_unit = pblk->nr_dev;
 		for(dev_id = 0; dev_id < pblk->nr_dev; dev_id++){
 			line = pblk_line_get_first_data(pblk, dev_id);
@@ -143,18 +143,15 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 				pr_err("pblk: line list corrupted at dev_id %d\n", dev_id);
 				return -EFAULT;
 			}
-			group->lines_units[dev_id].dev_id = dev_id;
-			group->lines_units[dev_id].line_id = line->line_id;
+			group->line_units[dev_id].dev_id = dev_id;
+			group->line_units[dev_id].line_id = line->id;
 		}
 
-		// first md stripe
+		// first stripe of raid
 		set->cpl->nr_io = group->nr_unit;
-		if (pblk->md_mode == PBLK_RAID1) {
-			atomic_set(&set->cpl->completion_cnt, 0);
-		} else if(pblk->md_mode == PBLK_RAID5) {
-			bitmap_zero(&set->cpl->cpl_map, set->cpl.nr_io);
-		}
+		bitmap_zero(&set->cpl->cpl_map, set->cpl->nr_io);
 		INIT_LIST_HEAD(&set->cpl->cpl_list);
+		spin_lock_init(&set->cpl->lock);
 	}
 
 	return 0;
@@ -511,6 +508,14 @@ static void pblk_core_free(struct pblk *pblk)
 	kfree(pblk->luns);
 	kfree(pblk->lines);
 	kfree(pblk->pad_dist);
+}
+
+static void pblk_line_group_free(struct pblk *pblk)
+{
+	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
+	kfree(set->line_groups);
+	kfree(set->parity);
+	kfree(set->cpl);
 }
 
 static void pblk_line_mg_free(struct pblk *pblk, int dev_id)
@@ -1157,6 +1162,7 @@ static int pblk_line_group_init(struct pblk *pblk, int mode) {
 			if (pblk->nr_dev != 1) {
 				pr_info("pblk: PBLK_SD need 1 devices while %d given, use %d as default\n", 
 						pblk->nr_dev, DEFAULT_DEV_ID);
+				ret = -1;
 			}
 			break;
 		case PBLK_RAID0:
@@ -1236,6 +1242,7 @@ static void pblk_free(struct pblk *pblk)
 	pblk_lines_free(pblk);
 	pblk_l2p_free(pblk);
 	pblk_rwb_free(pblk);
+	pblk_line_group_free(pblk);
 	pblk_core_free(pblk);
 
 	kfree(pblk);
@@ -1293,7 +1300,7 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 
 	pr_info("pblk: dev[0] OCSSD version %d\n", geo->version);
 	ret = pblk_check_geos(devs, nr_dev);
-	if(ret){
+	if (ret) {
 		pr_err("pblk: different MD GEOs not supported\n");
 		return ERR_PTR(-EINVAL);
 	}
@@ -1364,7 +1371,7 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	}
 	pr_info("pblk: done pblk_lines_init\n");
 
-	ret = pblk_line_group_init(pblk, PBLK_RAID1);
+	ret = pblk_line_group_init(pblk, PBLK_RAID0);
 	if (ret) {
 		pr_err("pblk: could not initialize md line group\n");
 		goto fail_free_lines;
@@ -1448,7 +1455,7 @@ fail_free_l2p:
 fail_free_rwb:
 	pblk_rwb_free(pblk);
 fail_free_line_group:
-	kfree(pblk->md_line_group_set.line_groups);
+	pblk_line_group_free(pblk);
 fail_free_lines:
 	pblk_lines_free(pblk);
 fail_free_core:

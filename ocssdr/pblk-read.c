@@ -286,7 +286,7 @@ static void pblk_end_io_read(struct nvm_rq *rqd)
 
 static void __pblk_end_io_read_md(struct pblk *pblk, struct pblk_md_read_ctx *md_r_ctx) 
 {
-	struct nvm_rq *md_rqd, *child_rqd;
+	struct nvm_rq *md_rqd;
 	struct bio *md_bio, *child_bio;
 	int *offset;
 	struct ppa_addr ppa;

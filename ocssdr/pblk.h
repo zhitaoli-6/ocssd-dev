@@ -57,8 +57,7 @@
 
 #define PBLK_DEFAULT_OP (21)
 
-#define DEFAULT_SCHEDULE
-#define DEFAULT_DEV_ID (1)
+#define DEFAULT_DEV_ID (0)
 
 //#define META_READ
 
@@ -113,11 +112,10 @@ enum {
 #define pblk_dma_ppa_size (sizeof(u64) * PBLK_MAX_REQ_ADDRS)
 
 struct pblk_md_cpl {
-	union {
-		atomic_t completion_cnt;
-		unsigned int cpl_map;
-	};
+	unsigned long cpl_map;
 	unsigned int nr_io;
+	struct list_head cpl_list;
+	spinlock_t lock;
 };
 
 /* write buffer completion context */
@@ -651,7 +649,7 @@ struct pblk_md_line_group_set {
 
 enum {
 	PBLK_SD = 0,
-	PBLK_RAID0 = 10
+	PBLK_RAID0 = 10,
 	PBLK_RAID1 = 11,
 	PBLK_RAID5 = 15,
 };
@@ -802,7 +800,7 @@ void pblk_rb_flush(struct pblk_rb *rb);
 void pblk_rb_sync_l2p(struct pblk_rb *rb);
 unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct nvm_rq *rqd,
 				 unsigned int pos, unsigned int nr_entries,
-				 unsigned int count);
+				 unsigned int count, bool set_flag);
 unsigned int pblk_rb_read_to_bio_list(struct pblk_rb *rb, struct bio *bio,
 				      struct list_head *list,
 				      unsigned int max);

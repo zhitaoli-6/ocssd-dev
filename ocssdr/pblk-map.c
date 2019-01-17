@@ -18,6 +18,37 @@
 
 #include "pblk.h"
 
+static void pblk_md_new_group(struct pblk *pblk)
+{
+	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
+	struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
+	struct pblk_line *line, *prev_line;
+	int nr_unit = group->nr_unit;
+	int i, dev_id;
+	for (i = 0;  i < nr_unit; i++) {
+		dev_id = group->line_units[i].dev_id;
+		line = pblk_line_get_data(pblk, dev_id);
+
+		if (!pblk_line_is_full(line)) {
+			pr_err("pblk: line %d of dev %d in past line group not full\n",
+					i, dev_id);
+		}
+	}
+
+	set->cur_group++;
+	group = &set->line_groups[set->cur_group];
+	// naive strategy used here
+	for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
+		prev_line  = pblk_line_get_data(pblk, dev_id);
+		line = pblk_line_replace_data(pblk, dev_id);
+		pblk_line_close_meta(pblk, prev_line);
+
+		group->nr_unit = nr_unit;
+		group->line_units[dev_id].dev_id = dev_id;
+		group->line_units[dev_id].line_id = line->id;
+	}
+}
+
 static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 			       struct ppa_addr *ppa_list,
 			       unsigned long *lun_bitmap,
@@ -38,11 +69,15 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
     struct nvm_geo *geo = &dev->geo; //add by kan 
 
 	if (pblk_line_is_full(line)) {
-		struct pblk_line *prev_line = line;
+		// if this line is full, then other lines in the same group all are full
+		pblk_md_new_group(pblk);
+		line = pblk_line_get_data(pblk, dev_id);
 
+		/*
+		struct pblk_line *prev_line = line;
 		line = pblk_line_replace_data(pblk, line->dev_id);
 		pblk_line_close_meta(pblk, prev_line);
-		// if this line is full, then other lines in the same group all are full
+		*/
 	}
 
 	emeta = line->emeta;

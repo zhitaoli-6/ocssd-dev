@@ -293,12 +293,6 @@ void pblk_free_rqd(struct pblk *pblk, struct nvm_rq *rqd, int type)
 		dev_id = DEFAULT_DEV_ID;
 	}
 
-#ifdef DEFAULT_SCHEDULE
-	if (dev_id != DEFAULT_DEV_ID) {
-		pr_err("pblk: free rqd inconsistent with DEFAULT_DEV_ID\n");
-	}
-#endif
-
 	dev = pblk->devs[dev_id];
 	//struct nvm_tgt_dev *dev = pblk->dev;
 	mempool_t *pool;

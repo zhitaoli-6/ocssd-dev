@@ -104,6 +104,7 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 				struct pblk_c_ctx *c_ctx)
 {
 	struct pblk_md_cpl *cpl = c_ctx->cpl;
+	struct pblk_c_ctx *c, *r;
 	struct nvm_rq *tmp_rqd;
 	unsigned int done = 0;
 	int md_id;
@@ -122,15 +123,22 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 	pblk_up_rq(pblk, rqd->ppa_list, rqd->nr_ppas, c_ctx->lun_bitmap, dev_id);
 	
 	if (pblk->md_mode == PBLK_RAID1) {
-		done = atomic_inc_return(&cpl->completion_cnt);
-		if (done < cpl->nr_io) {
+		md_id = c_ctx->md_id;
+
+		spin_lock(&cpl->lock);
+		WARN_ON(test_and_set_bit(md_id, &cpl->cpl_map));
+		done = bitmap_weight(&cpl->cpl_map, cpl->nr_io);
+		pr_info("pblk: md_id %d, end_io_write %u/%u\n", md_id, done, cpl->nr_io);
+		if (!bitmap_full(&cpl->cpl_map, cpl->nr_io)) {
 			list_add_tail(&c_ctx->list, &cpl->cpl_list);
+			spin_unlock(&cpl->lock);
 			return;
 		}
+		spin_unlock(&cpl->lock);
 
 		done = 1;
 		// free bio/rqd
-		list_for_each_entry(c, &cpl->cpl_list,list) {
+		list_for_each_entry_safe(c, r, &cpl->cpl_list, list) {
 			tmp_rqd = nvm_rq_from_c_ctx(c);
 			if (c->nr_padded)
 				pblk_bio_free_pages(pblk, tmp_rqd->bio, c->nr_valid,
@@ -138,23 +146,33 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 			bio_put(tmp_rqd->bio);
 			pblk_free_rqd(pblk, rqd, PBLK_WRITE);
 
+			list_del(&c->list);
+
 			done++;
 		}
 		if (done != cpl->nr_io) {
-			pr_err("pblk: %s PBLK_RAID1 inconsistent done %u with nr_io %u\n"
+			pr_err("pblk: %s PBLK_RAID1 inconsistent done %u with nr_io %u\n",
 					__func__, done, cpl->nr_io);
 		}
-
 		pblk_write_cpl_sync_rb(pblk, rqd, c_ctx);
 	} else if (pblk->md_mode == PBLK_RAID5) {
 		md_id = c_ctx->md_id;
+
+		spin_lock(&cpl->lock);
 		WARN_ON(test_and_set_bit(md_id, &cpl->cpl_map));
 		list_add_tail(&c_ctx->list, &cpl->cpl_list);
+
+		done = bitmap_weight(&cpl->cpl_map, cpl->nr_io);
+		pr_info("pblk: md_id %d, end_io_write %u/%u\n", md_id, done, cpl->nr_io);
 		if (!bitmap_full(&cpl->cpl_map, cpl->nr_io)) {
+			spin_unlock(&cpl->lock);
 			return;
 		}
-		list_for_each_entry(c, &cpl->cpl_list,list) {
+		spin_unlock(&cpl->lock);
+
+		list_for_each_entry_safe(c, r, &cpl->cpl_list, list) {
 			tmp_rqd = nvm_rq_from_c_ctx(c);
+			list_del(&c->list);
 			if (c->md_id == cpl->nr_io - 1) {
 				if (c->nr_padded)
 					pblk_bio_free_pages(pblk, tmp_rqd->bio, c->nr_valid,
@@ -163,8 +181,11 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 				pblk_free_rqd(pblk, rqd, PBLK_WRITE);
 				continue;
 			}
+
 			pblk_write_cpl_sync_rb(pblk, tmp_rqd, c);
 		}
+	} else {
+		pblk_write_cpl_sync_rb(pblk, rqd, c_ctx);
 	}
 }
 
@@ -585,21 +606,21 @@ static int pblk_schedule_write(struct pblk *pblk)
 {
 	int dev_id = -1;
 	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
-	struct pblk_md_line_group *group = set->lines_groups[set->cur_group];
+	struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
 	int *unit_id_ptr = &pblk->sche_meta.unit_id;
 	switch (pblk->md_mode) {
 		case PBLK_SD:
 			dev_id = DEFAULT_DEV_ID;
 			break;
 		case PBLK_RAID1:
-			dev_id = group->lines_units[*unit_id_ptr].dev_id;
+			dev_id = group->line_units[*unit_id_ptr].dev_id;
 			break;
 		case PBLK_RAID0:
-			dev_id = group->lines_units[*unit_id_ptr].dev_id;
+			dev_id = group->line_units[*unit_id_ptr].dev_id;
 			*unit_id_ptr = (*unit_id_ptr+1) % group->nr_unit;
 			break;
 		case PBLK_RAID5:
-			dev_id = group->lines_units[*unit_id_ptr].dev_id;
+			dev_id = group->line_units[*unit_id_ptr].dev_id;
 			*unit_id_ptr = (*unit_id_ptr+1) % group->nr_unit;
 			break;
 		default:
@@ -617,9 +638,10 @@ static void pblk_md_new_stripe(struct pblk *pblk, bool clear)
 
 	set->cpl = kzalloc(sizeof(struct pblk_md_cpl), GFP_KERNEL);
 
-	set->cpl->nr_io = set->lines_group[set->cur_group].nr_unit;
+	set->cpl->nr_io = set->line_groups[set->cur_group].nr_unit;
 	INIT_LIST_HEAD(&set->cpl->cpl_list);
 	bitmap_zero(&set->cpl->cpl_map, set->cpl->nr_io);
+	spin_lock_init(&set->cpl->lock);
 	
 	pblk->sche_meta.unit_id = 0;
 }
@@ -630,13 +652,13 @@ static int pblk_submit_raid1_write(struct pblk *pblk, unsigned long pos,
 	struct nvm_rq *rqd;
 	struct bio *bio;
 	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
-	struct pblk_md_line_group *group = set->lines_groups[set->cur_group];	
+	struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
 	int unit_id = pblk->sche_meta.unit_id;
 	int dev_id;
 	bool set_flag;
 
 	for (unit_id++; unit_id < group->nr_unit; unit_id++) {
-		dev_id = group->lines_units[unit_id].dev_id;
+		dev_id = group->line_units[unit_id].dev_id;
 
 		bio = bio_alloc(GFP_KERNEL, secs_to_sync);
 		bio->bi_iter.bi_sector = 0; /* internal bio */
@@ -678,10 +700,11 @@ fail_put_bio:
 static int pblk_submit_raid5_write(struct pblk *pblk, unsigned long pos,
 		unsigned int secs_to_sync, unsigned int secs_avail) 
 {
-	struct pblk_rb *rb = pblk->rwb;
+	struct pblk_rb *rb = &pblk->rwb;
+	struct pblk_rb_entry *entry;
 
 	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
-	struct pblk_md_line_group *group = set->lines_groups[set->cur_group];	
+	struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
 	int unit_id = pblk->sche_meta.unit_id;
 
 	struct nvm_rq *rqd;
@@ -708,7 +731,7 @@ static int pblk_submit_raid5_write(struct pblk *pblk, unsigned long pos,
 		for (j = 0; j < size; j++) {
 			parity[i*size + j] ^= data[j];
 		}
-		pos = (pos + 1) & (pblk->nr_entries - 1);
+		pos = (pos + 1) & (rb->nr_entries - 1);
 	}
 	// assume pad vales are 0. todo
 	for (i = 0; i < pad; i++) {
@@ -717,7 +740,7 @@ static int pblk_submit_raid5_write(struct pblk *pblk, unsigned long pos,
 		}
 	}
 	if (unit_id == group->nr_unit-1) {
-		dev_id = group->lines_units[unit_id].dev_id;
+		dev_id = group->line_units[unit_id].dev_id;
 
 		unsigned long data_len = PAGE_SIZE * pblk->min_write_pgs;
 		void *buf = vmalloc(data_len);
@@ -737,7 +760,7 @@ static int pblk_submit_raid5_write(struct pblk *pblk, unsigned long pos,
 		rqd->dev = pblk->devs[dev_id];
 
 		c_ctx = nvm_rq_to_pdu(rqd);
-		c_ctx->sentry = pos;
+		c_ctx->sentry = EMPTY_ENTRY;
 		c_ctx->nr_padded = 0;
 		c_ctx->nr_valid = pblk->min_write_pgs;
 		c_ctx->md_id = unit_id;
