@@ -346,8 +346,10 @@ out:
 		bio_endio(md_bio);
 		bio_put(md_bio);
 		for (dev_id = 0; dev_id < NVM_MD_MAX_DEV_CNT; dev_id++) {
-			if (md_r_ctx->bio[dev_id]) {
-				bio_put(md_r_ctx->bio[dev_id]);
+			child_bio = md_r_ctx->bio[dev_id];
+			if (child_bio) {
+				pblk_bio_free_pages(pblk, child_bio, 0, child_bio->bi_vcnt);
+				bio_put(child_bio);
 			}
 		}
 
