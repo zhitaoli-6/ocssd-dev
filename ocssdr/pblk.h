@@ -127,6 +127,7 @@ struct pblk_c_ctx {
 	unsigned int nr_valid;
 	unsigned int nr_padded;
 
+	int map_id; /* dev_id mapped in l2p table */
 	int md_id; /* index in md stripe */
 	struct pblk_md_cpl *cpl; /* completion info of md write */
 };
@@ -626,7 +627,9 @@ struct pblk_dev_age_info {
 struct pblk_schedule_meta {
 	struct pblk_dev_perf_info *perf_info;
 	struct pblk_dev_age_info *age_info;
-	int unit_id;
+
+	unsigned int stripe_id;
+	unsigned int unit_id;
 };
 
 struct pblk_md_line_unit {
@@ -1001,6 +1004,26 @@ static inline void pblk_mfree(void *ptr, int type)
 		kfree(ptr);
 	else
 		vfree(ptr);
+}
+
+static inline bool pblk_is_raid1(struct pblk *pblk)
+{
+	return pblk->md_mode == PBLK_RAID1;
+}
+
+static inline bool pblk_is_raid5(struct pblk *pblk)
+{
+	return pblk->md_mode == PBLK_RAID5;
+}
+
+static inline bool pblk_is_raid1or5(struct pblk *pblk)
+{
+	return  pblk_is_raid1(pblk) || pblk_is_raid5(pblk);
+}
+
+static inline bool pblk_id_is_parity(struct pblk *pblk, int md_id) 
+{
+	return md_id == pblk->nr_dev - 1;
 }
 
 static inline struct nvm_rq *nvm_rq_from_c_ctx(void *c_ctx)

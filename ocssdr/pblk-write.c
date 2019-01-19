@@ -60,7 +60,7 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	bio_put(rqd->bio);
 	pblk_free_rqd(pblk, rqd, PBLK_WRITE);
 	
-	if (pblk->md_mode == PBLK_RAID1 || pblk->md_mode == PBLK_RAID5) {
+	if (pblk_is_raid1or5(pblk)){
 		kfree(c_ctx->cpl);
 	}
 
@@ -120,6 +120,7 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 	atomic_long_sub(c_ctx->nr_valid, &pblk->inflight_writes);
 #endif
 
+	//pr_info("pblk: %s callback\n", __func__);
 	pblk_up_rq(pblk, rqd->ppa_list, rqd->nr_ppas, c_ctx->lun_bitmap, dev_id);
 	
 	if (pblk->md_mode == PBLK_RAID1) {
@@ -128,7 +129,7 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 		spin_lock(&cpl->lock);
 		WARN_ON(test_and_set_bit(md_id, &cpl->cpl_map));
 		done = bitmap_weight(&cpl->cpl_map, cpl->nr_io);
-		pr_info("pblk: md_id %d, end_io_write %u/%u\n", md_id, done, cpl->nr_io);
+		//pr_info("pblk: md_id %d, end_io_write %u/%u\n", md_id, done, cpl->nr_io);
 		if (!bitmap_full(&cpl->cpl_map, cpl->nr_io)) {
 			list_add_tail(&c_ctx->list, &cpl->cpl_list);
 			spin_unlock(&cpl->lock);
@@ -144,7 +145,7 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 				pblk_bio_free_pages(pblk, tmp_rqd->bio, c->nr_valid,
 									c->nr_padded);
 			bio_put(tmp_rqd->bio);
-			pblk_free_rqd(pblk, rqd, PBLK_WRITE);
+			pblk_free_rqd(pblk, tmp_rqd, PBLK_WRITE);
 
 			list_del(&c->list);
 
@@ -178,7 +179,7 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 					pblk_bio_free_pages(pblk, tmp_rqd->bio, c->nr_valid,
 										c->nr_padded);
 				bio_put(tmp_rqd->bio);
-				pblk_free_rqd(pblk, rqd, PBLK_WRITE);
+				pblk_free_rqd(pblk, tmp_rqd, PBLK_WRITE);
 				continue;
 			}
 
@@ -612,16 +613,14 @@ static int pblk_schedule_write(struct pblk *pblk)
 		case PBLK_SD:
 			dev_id = DEFAULT_DEV_ID;
 			break;
-		case PBLK_RAID1:
-			dev_id = group->line_units[*unit_id_ptr].dev_id;
-			break;
 		case PBLK_RAID0:
 			dev_id = group->line_units[*unit_id_ptr].dev_id;
 			*unit_id_ptr = (*unit_id_ptr+1) % group->nr_unit;
 			break;
+		case PBLK_RAID1:
 		case PBLK_RAID5:
 			dev_id = group->line_units[*unit_id_ptr].dev_id;
-			*unit_id_ptr = (*unit_id_ptr+1) % group->nr_unit;
+			*unit_id_ptr = (*unit_id_ptr+1);
 			break;
 		default:
 			pr_err("pblk: schedule_write unexpected pblk md_mode\n");
@@ -643,6 +642,7 @@ static void pblk_md_new_stripe(struct pblk *pblk, bool clear)
 	bitmap_zero(&set->cpl->cpl_map, set->cpl->nr_io);
 	spin_lock_init(&set->cpl->lock);
 	
+	pblk->sche_meta.stripe_id = (pblk->sche_meta.stripe_id + 1) % set->cpl->nr_io;
 	pblk->sche_meta.unit_id = 0;
 }
 
@@ -653,11 +653,21 @@ static int pblk_submit_raid1_write(struct pblk *pblk, unsigned long pos,
 	struct bio *bio;
 	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
 	struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
-	int unit_id = pblk->sche_meta.unit_id;
+	int *id_ptr = &pblk->sche_meta.unit_id;
+	int unit_id;
 	int dev_id;
 	bool set_flag;
 
-	for (unit_id++; unit_id < group->nr_unit; unit_id++) {
+	if (*id_ptr != 1) {
+		pr_err("pblk: %s begin write raid1 stripe, while unit id is %d not 1\n",
+				__func__, unit_id);
+		return 1;
+	}
+
+	while (*id_ptr < group->nr_unit) {
+		unit_id = *id_ptr;
+		*id_ptr = unit_id + 1;
+
 		dev_id = group->line_units[unit_id].dev_id;
 
 		bio = bio_alloc(GFP_KERNEL, secs_to_sync);
@@ -694,6 +704,7 @@ fail_free_bio:
 fail_put_bio:
 	bio_put(bio);
 	pblk_free_rqd(pblk, rqd, PBLK_WRITE);
+	pr_err("pblk: %s fail path not ok now\n", __func__);
 	return 1;
 }
 

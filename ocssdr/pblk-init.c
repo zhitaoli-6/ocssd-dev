@@ -145,6 +145,7 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 			}
 			group->line_units[dev_id].dev_id = dev_id;
 			group->line_units[dev_id].line_id = line->id;
+			pr_info("pblk: first stripe dev %d line %d\n", dev_id, line->id);
 		}
 
 		// first stripe of raid
@@ -689,6 +690,20 @@ static unsigned int calc_emeta_len(struct pblk *pblk)
 	return (lm->emeta_len[1] + lm->emeta_len[2] + lm->emeta_len[3]);
 }
 
+static void pblk_set_md_capacity(struct pblk *pblk)
+{
+	switch (pblk->md_mode) {
+		case PBLK_RAID1:
+			pblk->capacity /= pblk->nr_dev;
+			break;
+		case PBLK_RAID5:
+			pblk->capacity = pblk->capacity * (pblk->nr_dev - 1) / pblk->nr_dev;
+			break;
+		default:
+			break;
+	}
+}
+
 static void pblk_set_provision(struct pblk *pblk, long nr_free_blks)
 {
 	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
@@ -1185,6 +1200,8 @@ static int pblk_line_group_init(struct pblk *pblk, int mode) {
 
 	if (!ret) {
 		pblk->md_mode = mode;
+		pblk_set_md_capacity(pblk);
+
 		struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
 		set->nr_group = pblk->l_mg[DEFAULT_DEV_ID].nr_lines;
 		set->cur_group = 0;
@@ -1200,6 +1217,7 @@ static int pblk_line_group_init(struct pblk *pblk, int mode) {
 static int pblk_scheduler_init(struct pblk *pblk){
 	// md-todo
 	pblk->sche_meta.unit_id = 0;
+	pblk->sche_meta.stripe_id = 0;
 	return 0;
 }
 
@@ -1371,7 +1389,7 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	}
 	pr_info("pblk: done pblk_lines_init\n");
 
-	ret = pblk_line_group_init(pblk, PBLK_RAID0);
+	ret = pblk_line_group_init(pblk, PBLK_RAID1);
 	if (ret) {
 		pr_err("pblk: could not initialize md line group\n");
 		goto fail_free_lines;
