@@ -32,7 +32,7 @@ using namespace std;
 
 //#define RAND_DATA
 
-//#define FILL_DATA
+#define FILL_DATA
 
 class Tester {
 public:
@@ -124,6 +124,7 @@ public:
 			//else cout << "passed" << endl;
 		}
 		delete []_w_buf;
+		//fsync(fd);
 		close(fd);
 	}
 	static void check_filled_data(size_t capacity, bool single){
@@ -151,8 +152,7 @@ public:
 			lseek(fd, sector * SECTOR_SIZE, SEEK_SET);
 			int cnt = read(fd, _r_buf, SECTOR_SIZE);
 			cout <<  "write page_no " << page << " ";
-			cout << endl;
-			//printf("%d %s\n", cnt, memcmp(_w_buf, _r_buf, SECTOR_SIZE) == 0 ? "pass" : "fail");
+			printf("%d %s\n", cnt, memcmp(_w_buf, _r_buf, SECTOR_SIZE) == 0 ? "pass" : "fail");
 		}
 		delete []_w_buf;
 		delete []_r_buf;
@@ -202,7 +202,7 @@ int main()
 
 	//Tester::run();
 	//Tester::run_single(4*1024*1024);
-	const unsigned long capacity = 1ll * SECTOR_SIZE * 1024 * 1024;
+	const unsigned long capacity = 1ll * SECTOR_SIZE * 1024 * 16;
 	Tester tester;
 	struct timeval t1, t2;
 	gettimeofday(&t1, NULL);
