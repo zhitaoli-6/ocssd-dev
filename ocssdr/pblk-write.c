@@ -25,6 +25,8 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	unsigned long ret;
 	int i;
 
+	//pr_info("pblk: end_w_bio md_id %d\n", c_ctx->md_id);
+
 	for (i = 0; i < c_ctx->nr_valid; i++) {
 		struct pblk_w_ctx *w_ctx;
 		int pos = c_ctx->sentry + i;
@@ -60,10 +62,6 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	bio_put(rqd->bio);
 	pblk_free_rqd(pblk, rqd, PBLK_WRITE);
 	
-	if (pblk_is_raid1or5(pblk)){
-		kfree(c_ctx->cpl);
-	}
-
 	return ret;
 }
 
@@ -156,6 +154,7 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 					__func__, done, cpl->nr_io);
 		}
 		pblk_write_cpl_sync_rb(pblk, rqd, c_ctx);
+		kfree(cpl);
 	} else if (pblk->md_mode == PBLK_RAID5) {
 		md_id = c_ctx->md_id;
 
@@ -164,7 +163,7 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 		list_add_tail(&c_ctx->list, &cpl->cpl_list);
 
 		done = bitmap_weight(&cpl->cpl_map, cpl->nr_io);
-		pr_info("pblk: md_id %d, end_io_write %u/%u\n", md_id, done, cpl->nr_io);
+		//pr_info("pblk: md_id %d, end_io_write %u/%u\n", md_id, done, cpl->nr_io);
 		if (!bitmap_full(&cpl->cpl_map, cpl->nr_io)) {
 			spin_unlock(&cpl->lock);
 			return;
@@ -175,16 +174,19 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 			tmp_rqd = nvm_rq_from_c_ctx(c);
 			list_del(&c->list);
 			if (c->md_id == cpl->nr_io - 1) {
-				if (c->nr_padded)
-					pblk_bio_free_pages(pblk, tmp_rqd->bio, c->nr_valid,
-										c->nr_padded);
-				bio_put(tmp_rqd->bio);
+				//pr_info("pblk: free md_id %d\n", c->md_id);
+				if (c->nr_padded) {
+					pr_err("pblk: %s PBLK_RAID5 parity padded\n", __func__);
+				}
+				//bio_put(tmp_rqd->bio);
+				vfree(cpl->parity);
 				pblk_free_rqd(pblk, tmp_rqd, PBLK_WRITE);
 				continue;
 			}
 
 			pblk_write_cpl_sync_rb(pblk, tmp_rqd, c);
 		}
+		kfree(cpl);
 	} else {
 		pblk_write_cpl_sync_rb(pblk, rqd, c_ctx);
 	}
@@ -660,7 +662,7 @@ static int pblk_submit_raid1_write(struct pblk *pblk, unsigned long pos,
 
 	if (*id_ptr != 1) {
 		pr_err("pblk: %s begin write raid1 stripe, while unit id is %d not 1\n",
-				__func__, unit_id);
+				__func__, *id_ptr);
 		return 1;
 	}
 
@@ -732,7 +734,6 @@ static int pblk_submit_raid5_write(struct pblk *pblk, unsigned long pos,
 	unsigned long *data;
 
 	unsigned int i, j;
-	int ret = 0;
 
 	// update parity or submit parity
 	for (i = 0; i < to_read; i++) {
@@ -776,8 +777,11 @@ static int pblk_submit_raid5_write(struct pblk *pblk, unsigned long pos,
 		c_ctx->nr_valid = pblk->min_write_pgs;
 		c_ctx->md_id = unit_id;
 		c_ctx->cpl = set->cpl;
+		
+		spin_lock(&c_ctx->cpl->lock);
+		c_ctx->cpl->parity = buf;
+		spin_unlock(&c_ctx->cpl->lock);
 
-		// parity end_io callback function???
 		if (pblk_submit_io_set(pblk, rqd, dev_id))
 			goto fail_free_bio;
 

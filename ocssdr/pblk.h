@@ -116,6 +116,7 @@ struct pblk_md_cpl {
 	unsigned int nr_io;
 	struct list_head cpl_list;
 	spinlock_t lock;
+	void *parity;
 };
 
 /* write buffer completion context */

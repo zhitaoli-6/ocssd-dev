@@ -579,17 +579,14 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct nvm_rq *rqd,
 	c_ctx->nr_valid = to_read;
 	c_ctx->nr_padded = pad;
 	c_ctx->cpl = pblk->md_line_group_set.cpl;
-	if (pblk->md_mode == PBLK_RAID1) {
+	if (pblk_is_raid1or5(pblk)) {
 		c_ctx->map_id = pblk->sche_meta.stripe_id;
 		c_ctx->md_id = pblk->sche_meta.unit_id - 1;
 		if (c_ctx->md_id < 0) {
 			pr_err("pblk: %s negative md_id %d\n",
 					__func__, c_ctx->md_id);
 		}
-	} else if (pblk->md_mode == PBLK_RAID5) {
-		pr_err("pblk: PBLK_RAID5 should not call func %s\n",
-				__func__);
-	}
+	} 
 
 	for (i = 0; i < to_read; i++) {
 		entry = &rb->entries[pos];
