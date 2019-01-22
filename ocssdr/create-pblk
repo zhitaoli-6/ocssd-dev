@@ -1,7 +1,10 @@
 #!/bin/bash
-id=$1
-if [ $id -lt 2 ]; then
-	nvme lnvm create -d nvme${id}n1 --lun-begin=0 --lun-end=31 -n pblk$id -t pblk -f
-else
-	echo not valid nvme id $id
-fi
+
+nvme lnvm create -d 1n1 --lun-begin=0 --lun-end=31 -n pblk_sd -t pblk -f
+
+#id=$1
+#if [ $id -lt 2 ]; then
+#	nvme lnvm create -d nvme${id}n1 --lun-begin=0 --lun-end=31 -n pblk$id -t pblk -f
+#else
+#	echo not valid nvme id $id
+#fi

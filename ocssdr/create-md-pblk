@@ -1,2 +1,2 @@
 #!/bin/bash
-nvme lnvm create -d 1n1,2n1,3n1,4n1 --lun-begin=0 --lun-end=31 -n pblk_md -t pblk -f
+nvme lnvm create -d 1n1,2n1,3n1 --lun-begin=0 --lun-end=31 -n pblk_md -t pblk -f

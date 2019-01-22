@@ -693,6 +693,14 @@ static int pblk_submit_raid1_write(struct pblk *pblk, unsigned long pos,
 
 	while (unit_id < group->nr_unit) {
 		dev_id = group->line_units[unit_id].dev_id;
+		if (unit_id == group->nr_unit - 1) {
+			set_flag = true;
+		} else {
+			set_flag = false;
+		}
+
+		unit_id++;
+		*id_ptr = unit_id;
 
 		bio = bio_alloc(GFP_KERNEL, secs_to_sync);
 		bio->bi_iter.bi_sector = 0; /* internal bio */
@@ -701,12 +709,6 @@ static int pblk_submit_raid1_write(struct pblk *pblk, unsigned long pos,
 		rqd = pblk_alloc_rqd(pblk, PBLK_WRITE);
 		rqd->bio = bio;
 		rqd->dev = pblk->devs[dev_id];
-
-		if (unit_id == group->nr_unit - 1) {
-			set_flag = true;
-		} else {
-			set_flag = false;
-		}
 
 		if (pblk_rb_read_to_bio(&pblk->rwb, rqd, pos, secs_to_sync,
 									secs_avail, set_flag)) {
@@ -721,8 +723,6 @@ static int pblk_submit_raid1_write(struct pblk *pblk, unsigned long pos,
 		atomic_long_add(secs_to_sync, &pblk->sub_writes);
 #endif
 
-		unit_id++;
-		*id_ptr = unit_id;
 	}
 	pblk_md_new_stripe(pblk, false);
 	return 0;

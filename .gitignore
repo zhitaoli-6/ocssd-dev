@@ -5,3 +5,4 @@
 *.symvers
 *.mk
 *.mod.c
+.tmp_versions

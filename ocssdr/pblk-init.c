@@ -1389,7 +1389,7 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	}
 	pr_info("pblk: done pblk_lines_init\n");
 
-	ret = pblk_line_group_init(pblk, PBLK_RAID5);
+	ret = pblk_line_group_init(pblk, PBLK_RAID0);
 	if (ret) {
 		pr_err("pblk: could not initialize md line group\n");
 		goto fail_free_lines;
