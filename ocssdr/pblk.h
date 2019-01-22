@@ -59,6 +59,8 @@
 
 #define DEFAULT_DEV_ID (0)
 
+#define KMALLOC_PARITY
+#define ATOMIC_STRIPE
 //#define META_READ
 
 enum {

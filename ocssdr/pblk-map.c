@@ -102,7 +102,6 @@ static void pblk_map_page_data(struct pblk *pblk, struct nvm_rq *rqd, unsigned i
         meta_list_mod = ppa_list[i].m.sec % geo->ws_min;
 			
 		if (i < valid_secs) {
-			kref_get(&line->ref);
 			if (pblk_is_raid1(pblk) && c_ctx->map_id == dev_id) 
 				goto fill_rqd;
 			else if (pblk_is_raid5(pblk) && !pblk_id_is_parity(pblk, c_ctx->md_id))
@@ -112,6 +111,7 @@ static void pblk_map_page_data(struct pblk *pblk, struct nvm_rq *rqd, unsigned i
 			else
 				continue;
 fill_rqd:
+			kref_get(&line->ref);
 			dev_ppa = pblk_set_ppa_dev_id(ppa_list[i], line->dev_id);
 			w_ctx = pblk_rb_w_ctx(&pblk->rwb, sentry + i);
 			w_ctx->ppa = dev_ppa; // modified by zhitao

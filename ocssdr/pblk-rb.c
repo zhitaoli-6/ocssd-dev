@@ -369,6 +369,7 @@ static int pblk_rb_flush_point_set(struct pblk_rb *rb, struct bio *bio,
 #endif
 
 	flush_point = (pos == 0) ? (rb->nr_entries - 1) : (pos - 1);
+	pr_info("pblk: %s, flush_point %u\n", __func__, flush_point);
 	entry = &rb->entries[flush_point];
 
 	/* Protect flush points */
@@ -565,10 +566,13 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct nvm_rq *rqd,
 	struct pblk_c_ctx *c_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *bio = rqd->bio;
 	struct pblk_rb_entry *entry;
+	unsigned int size = PAGE_SIZE / sizeof(unsigned long);
 	struct page *page;
 	unsigned int pad = 0, to_read = nr_entries;
-	unsigned int i;
+	unsigned int i, j;
 	int flags;
+	unsigned long *parity;
+	unsigned long *data;
 
 	if (count < nr_entries) {
 		pad = nr_entries - count;
@@ -579,14 +583,39 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct nvm_rq *rqd,
 	c_ctx->nr_valid = to_read;
 	c_ctx->nr_padded = pad;
 	c_ctx->cpl = pblk->md_line_group_set.cpl;
+
 	if (pblk_is_raid1or5(pblk)) {
 		c_ctx->map_id = pblk->sche_meta.stripe_id;
 		c_ctx->md_id = pblk->sche_meta.unit_id - 1;
+		//pr_info("pblk: write rqd, md_id %d, pos %u, to_read %u, pad %u\n",
+				//c_ctx->md_id, pos, to_read, pad);
 		if (c_ctx->md_id < 0) {
 			pr_err("pblk: %s negative md_id %d\n",
 					__func__, c_ctx->md_id);
 		}
 	} 
+
+	if (pblk_is_raid5(pblk)) {
+		unsigned int pos1 = pos;
+		parity = pblk->md_line_group_set.parity;
+		// update parity or submit parity
+		for (i = 0; i < to_read; i++) {
+			entry = &rb->entries[pos];
+			data = entry->data;
+
+			for (j = 0; j < size; j++) {
+				parity[i*size + j] ^= data[j];
+			}
+			pos = (pos + 1) & (rb->nr_entries - 1);
+		}
+		// assume pad vales are 0. todo
+		for (i = 0; i < pad; i++) {
+			for (j = 0; j < size; j++) {
+				parity[to_read*size + i*size + j] ^= 0;
+			}
+		}
+		pos = pos1;
+	}
 
 	for (i = 0; i < to_read; i++) {
 		entry = &rb->entries[pos];
@@ -644,7 +673,7 @@ try:
 		if (pad < pblk->min_write_pgs)
 			atomic64_inc(&pblk->pad_dist[pad - 1]);
 		else
-			pr_warn("pblk: padding more than min. sectors\n");
+			pr_warn("pblk: padding %u, not less than min. sectors\n", pad);
 
 		atomic64_add(pad, &pblk->pad_wa);
 	}

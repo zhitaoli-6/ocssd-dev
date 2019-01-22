@@ -195,7 +195,7 @@ static int pblk_rwb_init(struct pblk *pblk)
 	unsigned int power_size, power_seg_sz;
 
 	nr_entries = pblk_rb_calculate_size(pblk->pgs_in_buffer);
-    printk("rb nr_entries=%ld\n", nr_entries); //add by kan
+	pr_info("pblk: rb nr_entries=%ld\n", nr_entries);
     
 	entries = vzalloc(nr_entries * sizeof(struct pblk_rb_entry));
 	if (!entries)
