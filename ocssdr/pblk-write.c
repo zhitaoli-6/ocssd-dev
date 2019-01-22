@@ -81,7 +81,7 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 	dev_id = pblk_get_rq_dev_id(pblk, rqd);
 	WARN_ON(dev_id == -1);
 	if(dev_id == -1){
-		pr_err("pblk: rqd undefined dev\n", __func__);
+		pr_err("pblk: %s rqd undefined dev\n", __func__);
 		return;
 	}
 
