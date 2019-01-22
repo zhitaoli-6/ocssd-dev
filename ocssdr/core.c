@@ -543,7 +543,7 @@ static int nvm_create_ocssdr_tgt(struct nvm_dev **dev, char *tgtname[], int nr_d
 		}
 	}
 
-	pr_info("nvm: ocssdr child targets check PASS\n", nr_dev);
+	pr_info("nvm: ocssdr child targets check PASS\n");
 	tdisk = alloc_disk(0);
 	if (!tdisk) {
 		ret = -ENOMEM;
@@ -1220,9 +1220,25 @@ static int __nvm_configure_create(struct nvm_ioctl_create *create)
 	int nr_dev, i;
 	int len;
 	int ret = 0;
+	const char *prefix = "nvme";
+	int pre_len = strlen(prefix);
+
 	/* create->devname will be changed by parse algorithm */
-	nr_dev = parse_by_delimiter(create->dev, ',', devname, NVM_MD_MAX_DEV_CNT);
-	if(!nr_dev) {
+	nr_dev = get_delimiter_cnt(create->dev, ',') + 1;
+	if (nr_dev > NVM_MD_MAX_DEV_CNT)
+		nr_dev = NVM_MD_MAX_DEV_CNT;
+	for (i = 0; i < nr_dev; i++) {
+		devname[i] = kzalloc(DISK_NAME_LEN, GFP_KERNEL);
+		if (!devname[i]) {
+			pr_err("nvm: alloc dev name fail\n");
+			return -EINVAL;
+		}
+		strcpy(devname[i], prefix);
+	}
+	nr_dev = parse_by_delimiter(create->dev, ',', devname, pre_len, nr_dev);
+	for (i = 0; i < nr_dev; i++)
+		pr_info("nvm: parse devname: %s\n", devname[i]);
+	if (!nr_dev) {
 		pr_err("nvm: no valid devices given\n");
 		return -EINVAL;
 	}
@@ -1241,7 +1257,7 @@ static int __nvm_configure_create(struct nvm_ioctl_create *create)
 
 	for(i = 0; i < nr_dev; i++) {
 		tgtname[i] = kmalloc(DISK_NAME_LEN, GFP_KERNEL);
-		if(!tgtname[i]) {
+		if (!tgtname[i]) {
 			for(i--; i >= 0 && tgtname[i]; i--)
 				kfree(tgtname[i]);
 			pr_err("nvm: tgtname memory allocation failed\n");

@@ -32,7 +32,7 @@ enum {
 #define NVM_20_SEC_BITS (24)
 #define NVM_20_RESERVED (8)
 
-#define NVM_MD_MAX_DEV_CNT (3)
+#define NVM_MD_MAX_DEV_CNT (8)
 enum {
 	NVM_OCSSD_SPEC_12 = 12,
 	NVM_OCSSD_SPEC_20 = 20,
