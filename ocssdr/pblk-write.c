@@ -630,6 +630,23 @@ static void pblk_free_write_rqd(struct pblk *pblk, struct nvm_rq *rqd)
 							c_ctx->nr_padded);
 }
 
+static int pblk_stripe_size(struct pblk *pblk)
+{
+	int stripe_size = 0;
+	switch (pblk->md_mode) {
+		case PBLK_SD:
+		case PBLK_RAID0:
+		case PBLK_RAID1:
+			stripe_size  = 1;
+		case PBLK_RAID5:
+			stripe_size  = pblk->nr_dev - 1;
+			break;
+		default:
+			pr_err("pblk: schedule_write unexpected pblk md_mode\n");
+	}
+	return stripe_size;
+}
+
 static int pblk_schedule_write(struct pblk *pblk) 
 {
 	int dev_id = -1;
@@ -756,15 +773,15 @@ static int pblk_submit_raid5_write(struct pblk *pblk, unsigned long pos,
 	void *buf;
 
 	
-	/*
-	pr_info("pblk: %s: sync %u, avail %u, flush %u\n",
-			__func__, secs_to_sync, secs_avail, secs_flush);
-			*/
+	//pr_info("pblk: %s: sync %u, avail %u, flush %u\n",
+			//__func__, secs_to_sync, secs_avail, secs_flush);
 
 #ifdef ATOMIC_STRIPE
-	if (secs_flush && secs_flush <= secs_to_sync && 
-			secs_avail <= (group->nr_unit-unit_id) * pblk->min_write_pgs){
 
+	// avoid endless waiting for flush of a stripe because that flush_point may be seen
+	// after write of an unit
+	if (secs_flush && secs_flush <= secs_to_sync
+			&& secs_avail <= (group->nr_unit-unit_id)*pblk->min_write_pgs) {
 		stripe_pad = (group->nr_unit - 1 - unit_id) * pblk->min_write_pgs;
 		//pr_info("pblk: write rqd, pad stripe %u, pos %lu\n", stripe_pad, pos);
 
@@ -911,7 +928,7 @@ static int pblk_submit_write(struct pblk *pblk)
 		return 1;
 
 	secs_to_flush = pblk_rb_flush_point_count(&pblk->rwb);
-	if (!secs_to_flush && secs_avail < pblk->min_write_pgs)
+	if (!secs_to_flush && secs_avail < pblk->min_write_pgs * pblk_stripe_size(pblk))
 		return 1;
 
 	secs_to_sync = pblk_calc_secs_to_sync(pblk, secs_avail, secs_to_flush);

@@ -71,13 +71,14 @@ static void pblk_map_page_data(struct pblk *pblk, struct nvm_rq *rqd, unsigned i
 
 	if (pblk_line_is_full(line)) {
 		// if this line is full, then other lines in the same group all are full
-		pblk_md_new_group(pblk);
-		line = pblk_line_get_data(pblk, dev_id);
-		/*
-		struct pblk_line *prev_line = line;
-		line = pblk_line_replace_data(pblk, line->dev_id);
-		pblk_line_close_meta(pblk, prev_line);
-		*/
+		if (!pblk_is_sd(pblk)) {
+			pblk_md_new_group(pblk);
+			line = pblk_line_get_data(pblk, dev_id);
+		} else {
+			struct pblk_line *prev_line = line;
+			line = pblk_line_replace_data(pblk, line->dev_id);
+			pblk_line_close_meta(pblk, prev_line);
+		}
 	}
 
 	emeta = line->emeta;

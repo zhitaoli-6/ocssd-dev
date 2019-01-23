@@ -191,7 +191,7 @@ void pblk_rl_free(struct pblk_rl *rl)
 void pblk_rl_init(struct pblk_rl *rl, int budget)
 {
 	struct pblk *pblk = container_of(rl, struct pblk, rl);
-	struct nvm_tgt_dev *dev = pblk->devs[0];
+	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	//struct pblk_line_mgmt *l_mg = &pblk->l_mg;
 	struct pblk_line_meta *lm = &pblk->lm;

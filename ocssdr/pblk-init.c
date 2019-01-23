@@ -693,6 +693,7 @@ static unsigned int calc_emeta_len(struct pblk *pblk)
 static void pblk_set_md_capacity(struct pblk *pblk)
 {
 	switch (pblk->md_mode) {
+		case PBLK_SD:
 		case PBLK_RAID1:
 			pblk->capacity /= pblk->nr_dev;
 			break;
@@ -1089,7 +1090,10 @@ static int pblk_lines_init(struct pblk *pblk)
 	//struct pblk_line_mgmt *l_mg = &pblk->l_mg[0];
 	struct pblk_line *line;
 	void **chunk_meta;
-	long nr_free_chks = 0;
+	long total_free_chks = 0;
+	long dev_free_chks = 0;
+	long free_chks = 0;
+	long min_dev_free_chks = -1;
 	int  ret, dev_id, line_id;
 
 	ret = pblk_line_meta_init(pblk);
@@ -1125,6 +1129,7 @@ static int pblk_lines_init(struct pblk *pblk)
 			goto fail_free_chunk_meta;
 		}
 
+		dev_free_chks = 0;
 		for (line_id = 0; line_id < pblk->l_mg[dev_id].nr_lines; line_id++) {
 			line = &pblk->lines[dev_id][line_id];
 
@@ -1132,12 +1137,37 @@ static int pblk_lines_init(struct pblk *pblk)
 			if (ret)
 				goto fail_free_lines;
 
-			nr_free_chks += pblk_setup_line_meta(pblk, line, chunk_meta[dev_id], line_id, dev_id);
+			free_chks = pblk_setup_line_meta(pblk, line, chunk_meta[dev_id], line_id, dev_id);
+			dev_free_chks += free_chks;
 		}
+		total_free_chks += dev_free_chks;
+		if (min_dev_free_chks < 0 || min_dev_free_chks > dev_free_chks)
+			min_dev_free_chks = dev_free_chks;
 	}
 
-	pblk_set_provision(pblk, nr_free_chks);
-	pr_info("nvm nr_free_chks: %ld\n", nr_free_chks);
+	free_chks = 0;
+	switch (pblk->md_mode) {
+		case PBLK_RAID0:
+			free_chks = total_free_chks;
+			break;
+		case PBLK_SD:
+		case PBLK_RAID1:
+			free_chks = min_dev_free_chks;
+			break;
+		case PBLK_RAID5:
+			free_chks = min_dev_free_chks * (pblk->nr_dev - 1);
+			break;
+		default:
+			break;
+	}
+
+	if (free_chks <= 0) {
+		pr_err("pblk: %s free_chks %ld\n", __func__, free_chks);
+		return 1;
+	}
+
+	pblk_set_provision(pblk, free_chks);
+	pr_info("pblk: total nr_free_chks: %ld, real %ld\n", total_free_chks, free_chks);
 
 	for(dev_id = 0; dev_id < pblk->nr_dev; dev_id++){
 		kfree(chunk_meta[dev_id]);
@@ -1170,14 +1200,15 @@ fail_free_meta:
 	return ret;
 }
 
-static int pblk_line_group_init(struct pblk *pblk, int mode) {
+static int pblk_line_group_init(struct pblk *pblk) {
+	int mode = pblk->md_mode;
 	int ret = 0;
 	switch (mode) {
 		case PBLK_SD:
 			if (pblk->nr_dev != 1) {
-				pr_info("pblk: PBLK_SD need 1 devices while %d given, use %d as default\n", 
+				pr_info("pblk: warning: PBLK_SD, %d given, use %d as default\n", 
 						pblk->nr_dev, DEFAULT_DEV_ID);
-				ret = -1;
+				ret = 0;
 			}
 			break;
 		case PBLK_RAID0:
@@ -1199,9 +1230,6 @@ static int pblk_line_group_init(struct pblk *pblk, int mode) {
 	}
 
 	if (!ret) {
-		pblk->md_mode = mode;
-		pblk_set_md_capacity(pblk);
-
 		struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
 		set->nr_group = pblk->l_mg[DEFAULT_DEV_ID].nr_lines;
 		set->cur_group = 0;
@@ -1309,6 +1337,10 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 {
 	// all tgt_dev assumed to be in the same configuration.
 	// md-bugs 
+	if (DEFAULT_DEV_ID >= nr_dev) {
+		pr_err("pblk: DEFAULT_DEV_ID %d >= nr_dev %d\n", DEFAULT_DEV_ID, nr_dev);
+		return ERR_PTR(-EINVAL);
+	}
 	struct nvm_tgt_dev *dev = devs[DEFAULT_DEV_ID];
 	struct nvm_geo *geo = &dev->geo;
 	struct request_queue *bqueue = dev->q;
@@ -1344,6 +1376,8 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 
 	pblk->devs = devs;
 	pblk->nr_dev = nr_dev;
+	pblk->md_mode = PBLK_RAID5;
+
 	pblk->disk = tdisk;
 	pblk->state = PBLK_STATE_RUNNING;
 	pblk->gc.gc_enabled = 0;
@@ -1389,7 +1423,7 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	}
 	pr_info("pblk: done pblk_lines_init\n");
 
-	ret = pblk_line_group_init(pblk, PBLK_RAID0);
+	ret = pblk_line_group_init(pblk);
 	if (ret) {
 		pr_err("pblk: could not initialize md line group\n");
 		goto fail_free_lines;

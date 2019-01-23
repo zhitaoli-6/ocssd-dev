@@ -1009,6 +1009,11 @@ static inline void pblk_mfree(void *ptr, int type)
 		vfree(ptr);
 }
 
+static inline bool pblk_is_sd(struct pblk *pblk)
+{
+	return pblk->md_mode == PBLK_SD;
+}
+
 static inline bool pblk_is_raid1(struct pblk *pblk)
 {
 	return pblk->md_mode == PBLK_RAID1;
