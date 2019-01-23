@@ -638,6 +638,7 @@ static int pblk_stripe_size(struct pblk *pblk)
 		case PBLK_RAID0:
 		case PBLK_RAID1:
 			stripe_size  = 1;
+			break;
 		case PBLK_RAID5:
 			stripe_size  = pblk->nr_dev - 1;
 			break;

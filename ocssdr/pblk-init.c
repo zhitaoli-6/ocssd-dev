@@ -690,21 +690,6 @@ static unsigned int calc_emeta_len(struct pblk *pblk)
 	return (lm->emeta_len[1] + lm->emeta_len[2] + lm->emeta_len[3]);
 }
 
-static void pblk_set_md_capacity(struct pblk *pblk)
-{
-	switch (pblk->md_mode) {
-		case PBLK_SD:
-		case PBLK_RAID1:
-			pblk->capacity /= pblk->nr_dev;
-			break;
-		case PBLK_RAID5:
-			pblk->capacity = pblk->capacity * (pblk->nr_dev - 1) / pblk->nr_dev;
-			break;
-		default:
-			break;
-	}
-}
-
 static void pblk_set_provision(struct pblk *pblk, long nr_free_blks)
 {
 	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
@@ -1156,8 +1141,6 @@ static int pblk_lines_init(struct pblk *pblk)
 			break;
 		case PBLK_RAID5:
 			free_chks = min_dev_free_chks * (pblk->nr_dev - 1);
-			break;
-		default:
 			break;
 	}
 
