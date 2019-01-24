@@ -21,7 +21,7 @@ using namespace std;
 #define SECTOR_SIZE	(4096)
 
 
-#define DEVICE_NAME	"/dev/pblk_md"
+#define DEVICE_NAME	"/dev/pblk_sd"
 #define MODULE_NAME	"ram-disk"
 #define MY_BLOCK_MAJOR	"240"
 #define MY_BLOCK_MINOR	"0"
@@ -105,7 +105,7 @@ public:
 #endif
 		//int page_cnt = capacity/SECTOR_SIZE;
 		int page_cnt = 1;
-		page_cnt = (single ? 1 : capacity/SECTOR_SIZE);
+		page_cnt = (single ? 15 : capacity/SECTOR_SIZE);
 
 		for(int page = 0; page < page_cnt; page++){
 			int sector = page;
@@ -124,7 +124,7 @@ public:
 			//else cout << "passed" << endl;
 		}
 		delete []_w_buf;
-		//fsync(fd);
+		fsync(fd);
 		close(fd);
 	}
 	static void check_filled_data(size_t capacity, bool single){
@@ -140,7 +140,7 @@ public:
 			_w_buf[i] = rand() % 26 + 'a';
 #endif
 		int page_cnt = 1;
-		page_cnt = (single ? 1 : capacity/SECTOR_SIZE);
+		page_cnt = (single ? 15 : capacity/SECTOR_SIZE);
 		for(int page = 0; page < page_cnt; page++){
 			int sector = page;
 #ifdef RAND_DATA
@@ -207,9 +207,9 @@ int main()
 	struct timeval t1, t2;
 	gettimeofday(&t1, NULL);
 #ifdef FILL_DATA
-	tester.fill_data(capacity, false);
+	tester.fill_data(capacity, true);
 #else
-	tester.check_filled_data(capacity, false);
+	tester.check_filled_data(capacity, true);
 #endif
 	gettimeofday(&t2, NULL);
 	printf("bench: BW %.2fMB/s\n", 1.0 * capacity / 1e6 / TIME(t1, t2));

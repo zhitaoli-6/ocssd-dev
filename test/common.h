@@ -18,4 +18,18 @@
                 msg, __FILE__, __LINE__); \
         exit(1); \
     } while(0)
+
+#define SECTOR_SIZE	(4096)
+#define DEVICE_NAME	"/dev/pblk_sd"
+
+
+#define O_RAND (1)
+
+#define PAGE_CNT (32)
+//#define PAGE_CNT (1ll*SECTOR_SIZE*1024)
     
+void rand_data(char *buf, int size)
+{
+	for(int i = 0; i < size; i++)
+		buf[i] = rand() % 26 + 'a';
+}
