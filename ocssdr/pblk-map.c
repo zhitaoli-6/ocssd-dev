@@ -42,6 +42,9 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 
 		line = pblk_line_replace_data(pblk, line->dev_id);
 		pblk_line_close_meta(pblk, prev_line);
+		
+		pr_info("pblk: %s: line %d work after line %d\n",
+				__func__, line->id, prev_line->id);
 	}
 
 	emeta = line->emeta;

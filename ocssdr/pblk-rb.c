@@ -578,6 +578,9 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct nvm_rq *rqd,
 	c_ctx->nr_valid = to_read;
 	c_ctx->nr_padded = pad;
 
+	//pr_info("pblk: %s: pos %u, nr_valid %u, pad %u\n",
+			//__func__, pos, to_read, pad);
+
 	for (i = 0; i < to_read; i++) {
 		entry = &rb->entries[pos];
 

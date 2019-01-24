@@ -116,6 +116,7 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 	if (factory_init) {
 		pblk_setup_uuid(pblk);
 	} else {
+		pr_info("pblk: %s: l2p_recover\n", __func__);
 		line = pblk_recov_l2p(pblk);
 		if (IS_ERR(line)) {
 			pr_err("pblk: could not recover l2p table\n");

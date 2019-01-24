@@ -139,6 +139,7 @@ static int pblk_recov_l2p_from_emeta(struct pblk *pblk, struct pblk_line *line)
 	u64 data_start, data_end;
 	u64 nr_valid_lbas, nr_lbas = 0;
 	u64 i;
+	pr_info("pblk: %s: rec line %d\n", __func__, line->id);
 
 	lba_list = emeta_to_lbas(pblk, emeta_buf);
 	if (!lba_list)
@@ -171,8 +172,12 @@ static int pblk_recov_l2p_from_emeta(struct pblk *pblk, struct pblk_line *line)
 		}
 
 		pblk_update_map(pblk, le64_to_cpu(lba_list[i]), ppa);
+		pr_info("pblk: %s: line %d: l2p rec: lba %llu, ppa %llu\n",
+				__func__, line->id, le64_to_cpu(lba_list[i]), ppa.ppa);
 		nr_lbas++;
 	}
+	pr_info("pblk: %s: line %d: l2p rec: nr_lba %llu\n",
+			__func__, line->id, nr_lbas);
 
 	if (nr_valid_lbas != nr_lbas)
 		pr_err("pblk: line %d - inconsistent lba list(%llu/%llu)\n",
@@ -357,6 +362,9 @@ static int pblk_recov_pad_oob(struct pblk *pblk, struct pblk_line *line,
 	int ret = 0;
     int meta_list_idx; //add by kan
     int meta_list_mod; //add by kan
+
+	pr_info("pblk: %s: pad line %d, left_ppas %d\n",
+			__func__, line->id, left_ppas);
 
 	spin_lock(&line->lock);
 	left_line_ppas = line->left_msecs;
@@ -776,6 +784,9 @@ static int pblk_recov_l2p_from_oob(struct pblk *pblk, struct pblk_line *line)
 	dma_addr_t dma_ppa_list, dma_meta_list;
 	int done, ret = 0;
 
+	pr_info("pblk: %s: rec line %d\n", __func__, line->id);
+	pr_info("pblk: %s: rec line %d, should not be called\n", __func__, line->id);
+
 	meta_list = nvm_dev_dma_alloc(dev->parent, GFP_KERNEL, &dma_meta_list);
     //int size = pblk_dma_meta_size + pblk_dma_ppa_size; //add by kan
     //meta_list = dma_alloc_coherent(ctrl->dev, size, &dma_meta_list, GFP_KERNEL); //modify by kan
@@ -952,6 +963,12 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 
 	/* Order data lines using their sequence number */
 	for (i = 0; i < l_mg->nr_lines; i++) {
+
+		if (i < 9 || i > 17) {
+			pr_info("pblk: %s: we only care line %d\n", __func__, i);
+			continue;
+		}
+
 		u32 crc;
 
 		line = &pblk->lines[dev_id][i];
@@ -1015,6 +1032,8 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 		pr_debug("pblk: recovering data line %d, seq:%llu\n",
 						line->id, smeta_buf->seq_nr);
 	}
+
+	pr_info("pblk: %s: found rec line cnt %d\n", __func__, found_lines);
 
 	if (!found_lines) {
 		pblk_setup_uuid(pblk);

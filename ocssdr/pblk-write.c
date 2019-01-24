@@ -33,6 +33,13 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 		w_ctx = pblk_rb_w_ctx(rwb, pos);
 		flags = READ_ONCE(w_ctx->flags);
 
+		struct ppa_addr ppa = w_ctx->ppa;
+		/*
+		pr_info("pblk: %s: pos %d, lba %llu ppa %llu(%u:%u:%u:%u:%u)\n", __func__,
+				pos, w_ctx->lba, ppa.ppa, ppa.c.dev_id, ppa.m.grp, ppa.m.pu, 
+				ppa.m.chk, ppa.m.sec);
+				*/
+
 		if (flags & PBLK_FLUSH_ENTRY) {
 			flags &= ~PBLK_FLUSH_ENTRY;
 			/* Release flags on context. Protect from writes */
@@ -80,11 +87,13 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 	int dev_id;
 	dev_id = pblk_get_rq_dev_id(pblk, rqd);
 	WARN_ON(dev_id == -1);
-	if(dev_id == -1){
+	if (dev_id == -1){
 		pr_err("pblk: %s rqd undefined dev\n", __func__);
 		return;
 	}
 
+	//pr_info("pblk: %s: pos %u, nr_valid %u, pad %u\n",
+			//__func__, c_ctx->sentry, c_ctx->nr_valid, c_ctx->nr_padded);
 
 #ifdef CONFIG_NVM_DEBUG
 	atomic_long_sub(c_ctx->nr_valid, &pblk->inflight_writes);

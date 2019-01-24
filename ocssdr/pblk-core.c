@@ -289,7 +289,7 @@ void pblk_free_rqd(struct pblk *pblk, struct nvm_rq *rqd, int type)
 	struct nvm_tgt_dev * dev;
 	if(dev_id == -1){
 		//WARN(1, "free rqd with undefined dev\n");
-		pr_info("pblk: free rqd without dev info, DEFAULT_DEV_ID %d used", DEFAULT_DEV_ID);
+		//pr_info("pblk: free rqd without dev info, DEFAULT_DEV_ID %d used", DEFAULT_DEV_ID);
 		dev_id = DEFAULT_DEV_ID;
 	}
 	dev = pblk->devs[dev_id];
@@ -743,7 +743,7 @@ next_rq:
 		struct pblk_sec_meta *meta_list = rqd.meta_list;
 
 		rqd.flags = pblk_set_progr_mode(pblk, PBLK_WRITE);
-        printk("pblk: emata write nr_ppas=%d\n", rqd.nr_ppas); //add by kan
+        //printk("pblk: emata write nr_ppas=%d\n", rqd.nr_ppas); //add by kan
 		for (i = 0; i < rqd.nr_ppas; ) {
 			spin_lock(&line->lock);
 			paddr = __pblk_alloc_page(pblk, line, min);
@@ -755,13 +755,13 @@ next_rq:
                 meta_list_idx = i / geo->ws_min; //add by kan
                 meta_list_mod = rqd.ppa_list[i].m.sec % geo->ws_min; //add by kan
 				meta_list[meta_list_idx].lba[meta_list_mod] = cpu_to_le64(ADDR_EMPTY); //modify by kan
-                printk("0x%llx ", rqd.ppa_list[i].ppa); //add by kan
+                //printk("0x%llx ", rqd.ppa_list[i].ppa); //add by kan
 			}
 		}
-        printk("\n"); //add by kan
+        //printk("\n"); //add by kan
     
 	} else {
-        printk("pblk: emata read nr_ppas=%d\n", rqd.nr_ppas); //add by kan
+        //printk("pblk: emata read nr_ppas=%d\n", rqd.nr_ppas); //add by kan
 		for (i = 0; i < rqd.nr_ppas; ) {
 			struct ppa_addr ppa = addr_to_gen_ppa(pblk, paddr, id);
 			int pos = pblk_ppa_to_pos(geo, ppa);
@@ -796,10 +796,10 @@ next_rq:
 			for (j = 0; j < min; j++, i++, paddr++) {
 				rqd.ppa_list[i] =
 					addr_to_gen_ppa(pblk, paddr, line->id);
-                printk("0x%llx ", rqd.ppa_list[i].ppa); //add by kan
+                //printk("0x%llx ", rqd.ppa_list[i].ppa); //add by kan
             }
 		}
-        printk("\n"); //add by kan 
+        //printk("\n"); //add by kan 
 	}
 
 	ret = pblk_submit_io_sync(pblk, &rqd, dev_id);
@@ -1651,7 +1651,7 @@ void pblk_line_free(struct pblk *pblk, struct pblk_line *line)
 	line->invalid_bitmap = NULL;
 	line->smeta = NULL;
 	line->emeta = NULL;
-    printk("pblk_line_free line id = %d\n", line->id);//add by kan
+    //printk("pblk_line_free line id = %d\n", line->id);//add by kan
 }
 
 static void __pblk_line_put(struct pblk *pblk, struct pblk_line *line)
