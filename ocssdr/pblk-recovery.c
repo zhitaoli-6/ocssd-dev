@@ -545,6 +545,8 @@ static int pblk_recov_scan_all_oob(struct pblk *pblk, struct pblk_line *line,
 	r_ptr = line->cur_sec;
 	rec_round = 0;
 
+	pr_info("pblk: %s: line id %d\n", __func__, line->id);
+
 next_rq:
 	memset(rqd, 0, pblk_g_rq_size);
 
@@ -681,6 +683,7 @@ static int pblk_recov_scan_oob(struct pblk *pblk, struct pblk_line *line,
 	dma_meta_list = p.dma_meta_list;
 
 	*done = 1;
+	pr_info("pblk: %s line %d\n", __func__, line->id);
 
 next_rq:
 	memset(rqd, 0, pblk_g_rq_size);
@@ -789,6 +792,8 @@ static int pblk_recov_l2p_from_oob(struct pblk *pblk, struct pblk_line *line)
 	void *data;
 	dma_addr_t dma_ppa_list, dma_meta_list;
 	int done, ret = 0;
+
+	pr_info("pblk: %s line %d\n", __func__, line->id);
 
 	meta_list = nvm_dev_dma_alloc(dev->parent, GFP_KERNEL, &dma_meta_list);
     //int size = pblk_dma_meta_size + pblk_dma_ppa_size; //add by kan
@@ -953,7 +958,8 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 	int i, valid_uuid = 0;
 	LIST_HEAD(recov_list);
 
-	pr_err("pblk rec: func(%s) bug here, never be called in this version\n", __func__);
+	pr_info("pblk: %s: dev %d\n", __func__, dev_id);
+	//pr_err("pblk rec: func(%s) bug here, never be called in this version\n", __func__);
 	/* TODO: Implement FTL snapshot */
 
 	/* Scan recovery - takes place when FTL snapshot fails */
@@ -976,19 +982,27 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 		line->lun_bitmap = ((void *)(smeta_buf)) +
 						sizeof(struct line_smeta);
 
-		if (!pblk_line_was_written(line, lm))
+		if (!pblk_line_was_written(line, lm)) {
+			pr_info("pblk: %s: line %d not written\n", __func__, i);
 			continue;
+		}
 
 		/* Lines that cannot be read are assumed as not written here */
-		if (pblk_line_read_smeta(pblk, line))
+		if (pblk_line_read_smeta(pblk, line)) {
+			pr_info("pblk: %s: line %d read smeta fail\n", __func__, i);
 			continue;
+		}
 
 		crc = pblk_calc_smeta_crc(pblk, smeta_buf);
-		if (le32_to_cpu(smeta_buf->crc) != crc)
+		if (le32_to_cpu(smeta_buf->crc) != crc) {
+			pr_info("pblk: %s: line %d crc fail\n", __func__, i);
 			continue;
+		}
 
-		if (le32_to_cpu(smeta_buf->header.identifier) != PBLK_MAGIC)
+		if (le32_to_cpu(smeta_buf->header.identifier) != PBLK_MAGIC) {
+			pr_info("pblk: %s: line %d smeta identifier fail\n", __func__, i);
 			continue;
+		}
 
 		if (smeta_buf->header.version_major != SMETA_VERSION_MAJOR) {
 			pr_err("pblk: found incompatible line version %u\n",
@@ -1007,6 +1021,14 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 					i);
 			continue;
 		}
+
+		/*
+		if (i < 9 || i >= 20) {
+			pr_info("pblk: %s: unexpected rec line %d\n", __func__, i);
+			continue;
+		}
+		*/
+		pr_info("pblk: %s: found line %d to rec\n", __func__, i);
 
 		/* Update line metadata */
 		spin_lock(&line->lock);
@@ -1031,6 +1053,8 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 						line->id, smeta_buf->seq_nr);
 	}
 
+	pr_info("pblk: %s: found %d line to rec\n", __func__, found_lines);
+
 	if (!found_lines) {
 		pblk_setup_uuid(pblk);
 
@@ -1052,11 +1076,17 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 
         printk("%s read emata line_id = %d\n", __func__, line->id);
 		if (pblk_line_read_emeta(pblk, line, line->emeta->buf)) {
+			pr_err("pblk: %s line %d partial written. Abort.We leave this case as future work\n",
+					__func__, line->id);
+			return ERR_PTR(-EINVAL);
+
 			pblk_recov_l2p_from_oob(pblk, line);
 			goto next;
 		}
 
 		if (pblk_recov_check_emeta(pblk, line->emeta->buf)) {
+			return ERR_PTR(-EINVAL);
+
 			pblk_recov_l2p_from_oob(pblk, line);
 			goto next;
 		}
@@ -1066,8 +1096,13 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 
 		pblk_recov_wa_counters(pblk, line->emeta->buf);
 
-		if (pblk_recov_l2p_from_emeta(pblk, line))
+		if (pblk_recov_l2p_from_emeta(pblk, line)) {
+			pr_err("pblk: %s: recov l2p from emeta of line %d fail. Abort\n",
+					__func__, line->id);
+			return ERR_PTR(-EINVAL);
+
 			pblk_recov_l2p_from_oob(pblk, line);
+		}
 
 next:
 		if (pblk_line_is_full(line)) {

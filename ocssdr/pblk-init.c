@@ -116,13 +116,19 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 	if (factory_init) {
 		pblk_setup_uuid(pblk);
 	} else {
-		pr_err("pblk: now l2p can not be recovered\n");
-		return -EFAULT;
+		pr_err("pblk: %s: begin recover l2p\n", __func__);
 		line = pblk_recov_l2p(pblk);
+		if (!line) {
+			pr_info("pblk: %s recov line ret NULL\n", __func__);
+		}
 		if (IS_ERR(line)) {
 			pr_err("pblk: could not recover l2p table\n");
 			return -EFAULT;
 		}
+		/*
+		pr_err("pblk: %s: end recover l2p. stop pblk\n", __func__);
+		return -EFAULT;
+		*/
 	}
 
 #ifdef CONFIG_NVM_DEBUG
@@ -1359,7 +1365,7 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 
 	pblk->devs = devs;
 	pblk->nr_dev = nr_dev;
-	pblk->md_mode = PBLK_RAID5;
+	pblk->md_mode = PBLK_SD;
 
 	pblk->disk = tdisk;
 	pblk->state = PBLK_STATE_RUNNING;

@@ -755,7 +755,7 @@ next_rq:
 		struct pblk_sec_meta *meta_list = rqd.meta_list;
 
 		rqd.flags = pblk_set_progr_mode(pblk, PBLK_WRITE);
-        printk("pblk: emata write nr_ppas=%d\n", rqd.nr_ppas); //add by kan
+        //printk("pblk: emata write nr_ppas=%d\n", rqd.nr_ppas); //add by kan
 		for (i = 0; i < rqd.nr_ppas; ) {
 			spin_lock(&line->lock);
 			paddr = __pblk_alloc_page(pblk, line, min);
@@ -767,13 +767,13 @@ next_rq:
                 meta_list_idx = i / geo->ws_min; //add by kan
                 meta_list_mod = rqd.ppa_list[i].m.sec % geo->ws_min; //add by kan
 				meta_list[meta_list_idx].lba[meta_list_mod] = cpu_to_le64(ADDR_EMPTY); //modify by kan
-                printk("0x%llx ", rqd.ppa_list[i].ppa); //add by kan
+                //printk("0x%llx ", rqd.ppa_list[i].ppa); //add by kan
 			}
 		}
-        printk("\n"); //add by kan
+        //printk("\n"); //add by kan
     
 	} else {
-        printk("pblk: emata read nr_ppas=%d\n", rqd.nr_ppas); //add by kan
+        //printk("pblk: emata read nr_ppas=%d\n", rqd.nr_ppas); //add by kan
 		for (i = 0; i < rqd.nr_ppas; ) {
 			struct ppa_addr ppa = addr_to_gen_ppa(pblk, paddr, id);
 			int pos = pblk_ppa_to_pos(geo, ppa);
@@ -792,8 +792,7 @@ next_rq:
 					ret = -EINTR;
 					goto free_rqd_dma;
 				}
-
-				ppa = addr_to_gen_ppa(pblk, paddr, id);
+ppa = addr_to_gen_ppa(pblk, paddr, id);
 				pos = pblk_ppa_to_pos(geo, ppa);
 			}
 
@@ -808,10 +807,10 @@ next_rq:
 			for (j = 0; j < min; j++, i++, paddr++) {
 				rqd.ppa_list[i] =
 					addr_to_gen_ppa(pblk, paddr, line->id);
-                printk("0x%llx ", rqd.ppa_list[i].ppa); //add by kan
+                //printk("0x%llx ", rqd.ppa_list[i].ppa); //add by kan
             }
 		}
-        printk("\n"); //add by kan 
+        //printk("\n"); //add by kan 
 	}
 
 	ret = pblk_submit_io_sync(pblk, &rqd, dev_id);
@@ -1574,6 +1573,13 @@ void pblk_pipeline_stop(struct pblk *pblk)
 	for(dev_id = 0; dev_id < pblk->nr_dev; dev_id++){
 		pr_info("pblk: pad writes of dev %d...\n", dev_id);
 		l_mg = &pblk->l_mg[dev_id];
+
+		/*
+		pr_info("pblk: %s: leave dev %d line %d partial\n", 
+				__func__, dev_id, l_mg->data_line->id);
+		ret = 0;
+		*/
+
 		ret = pblk_recov_pad(pblk, dev_id);
 		if (ret) {
 			pr_err("pblk: could not close data on teardown(%d)\n", ret);
