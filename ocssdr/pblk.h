@@ -650,6 +650,7 @@ struct pblk_md_line_group_set {
 	int cur_group;
 	struct pblk_md_line_group *line_groups;
 	void *parity;
+	__le64 *lba_list;
 	struct pblk_md_cpl *cpl; /* completion info */
 };
 

@@ -677,8 +677,10 @@ static void pblk_md_new_stripe(struct pblk *pblk, bool clear)
 {
 	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
 
-	if (clear)
+	if (clear) {
 		memset(set->parity, 0, PAGE_SIZE*pblk->min_write_pgs);
+		memset(set->lba_list, 0, sizeof(__le64)*pblk->min_write_pgs);
+	}
 
 	set->cpl = kzalloc(sizeof(struct pblk_md_cpl), GFP_KERNEL);
 

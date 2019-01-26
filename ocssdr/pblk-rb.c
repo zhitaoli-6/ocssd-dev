@@ -572,6 +572,7 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct nvm_rq *rqd,
 	unsigned int i, j;
 	int flags;
 	unsigned long *parity;
+	__le64 *lba_list;
 	unsigned long *data;
 
 	if (count < nr_entries) {
@@ -598,14 +599,19 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct nvm_rq *rqd,
 	if (pblk_is_raid5(pblk)) {
 		unsigned int pos1 = pos;
 		parity = pblk->md_line_group_set.parity;
-		// update parity or submit parity
+		lba_list = pblk->md_line_group_set.lba_list;
+		// update parity
 		for (i = 0; i < to_read; i++) {
 			entry = &rb->entries[pos];
 			data = entry->data;
 
+			// parity
 			for (j = 0; j < size; j++) {
 				parity[i*size + j] ^= data[j];
 			}
+			//lba
+			lba_list[i] ^= cpu_to_le64(entry->w_ctx.lba);
+
 			pos = (pos + 1) & (rb->nr_entries - 1);
 		}
 		// assume pad vales are 0. todo
@@ -613,6 +619,7 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct nvm_rq *rqd,
 			for (j = 0; j < size; j++) {
 				parity[to_read*size + i*size + j] ^= 0;
 			}
+			lba_list[to_read+i] ^= cpu_to_le64(ADDR_EMPTY);
 		}
 		pos = pos1;
 	}

@@ -1224,7 +1224,8 @@ static int pblk_line_group_init(struct pblk *pblk) {
 		set->cur_group = 0;
 		set->line_groups = kcalloc(set->nr_group, sizeof(struct pblk_md_line_group), GFP_KERNEL);
 
-		set->parity = kzalloc(PBLK_EXPOSED_PAGE_SIZE * pblk->min_write_pgs, GFP_KERNEL);;
+		set->parity = kzalloc(PBLK_EXPOSED_PAGE_SIZE * pblk->min_write_pgs, GFP_KERNEL);
+		set->lba_list = kzalloc(sizeof(__le64)*pblk->min_write_pgs, GFP_KERNEL);
 		set->cpl = kzalloc(sizeof(struct pblk_md_cpl), GFP_KERNEL);
 	}
 	return ret;
