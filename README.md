@@ -1,6 +1,6 @@
 # ocssd-dev
 
-Doing things with Openchannel SSD. Please see [docs](docs/) in detail.
+Doing things with Open-Channel SSD. Please see [docs](docs/) in detail.
 
 ## OCSSDR
 
@@ -22,3 +22,16 @@ There are three available methods which can provide a block device survice with 
 3. **enhance pblk with multiple devices support**
 
 This work focuses on the third one.
+
+
+### Done
+
+SD/RAID0/RAID1/RAID5 normal path
+
+### Todo
+
+* Recover from poweroff
+* Error handling: RAID1/RAID5
+* Perf compared to software raid on multiple pblks
+
+
