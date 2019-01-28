@@ -115,6 +115,21 @@ int pblk_recov_setup_rq(struct pblk *pblk, struct pblk_c_ctx *c_ctx,
 	return 0;
 }
 
+int pblk_recov_check_emeta_md(struct pblk *pblk, struct line_emeta *emeta_buf)
+{
+	int md_mode = le32_to_cpu(emeta_buf->md_mode);
+	if (md_mode != pblk->md_mode) {
+		pr_err("pblk: %s: wrong md_mode %d\n", __func__, md_mode);
+		return 1;
+	} 
+	int nr_unit = le32_to_cpu(emeta_buf->nr_unit);
+	if (nr_unit != pblk->nr_dev) {
+		pr_err("pblk: %s: wrong nr_unit %d\n", __func__, nr_unit);
+		return 1;
+	}
+	return 0;
+}
+
 int pblk_recov_check_emeta(struct pblk *pblk, struct line_emeta *emeta_buf)
 {
 	u32 crc;
@@ -129,12 +144,18 @@ int pblk_recov_check_emeta(struct pblk *pblk, struct line_emeta *emeta_buf)
             le32_to_cpu(emeta_buf->header.identifier), PBLK_MAGIC);
 		return 1;
     }
+
+	if (pblk_recov_check_emeta_md(pblk, emeta_buf)) {
+		pr_info("pblk: %s: emeta_md error\n", __func__);
+	}
+
 	return 0;
 }
 
 static int pblk_recov_l2p_from_emeta(struct pblk *pblk, struct pblk_line *line)
 {
-	struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID];
+	int dev_id = line->dev_id;
+	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
 	struct nvm_geo *geo = &dev->geo;
 	struct pblk_line_meta *lm = &pblk->lm;
 	struct pblk_emeta *emeta = line->emeta;
@@ -157,6 +178,7 @@ static int pblk_recov_l2p_from_emeta(struct pblk *pblk, struct pblk_line *line)
 		int pos;
 
 		ppa = addr_to_gen_ppa(pblk, i, line->id);
+		ppa = pblk_set_ppa_dev_id(ppa, dev_id);
 		pos = pblk_ppa_to_pos(geo, ppa);
 
 		/* Do not update bad blocks */
@@ -175,6 +197,8 @@ static int pblk_recov_l2p_from_emeta(struct pblk *pblk, struct pblk_line *line)
 		}
 
 		pblk_update_map(pblk, le64_to_cpu(lba_list[i]), ppa);
+		pr_info("pblk: %s: lba %llu in line %d of dev %d\n",
+				__func__, le64_to_cpu(lba_list[i]), line->id, dev_id);
 		nr_lbas++;
 	}
 
@@ -943,21 +967,23 @@ static int pblk_line_was_written(struct pblk_line *line,
 	return 0;
 }
 
-struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
+int pblk_recov_smeta_dev(struct pblk *pblk, int dev_id,
+		struct list_head *recov_list, int *meta_line_ptr,
+		int *err_no)
 {
-	int dev_id = DEFAULT_DEV_ID;
 	struct pblk_line_meta *lm = &pblk->lm;
 	struct pblk_line_mgmt *l_mg = &pblk->l_mg[dev_id];
-	struct pblk_line *line, *tline, *data_line = NULL;
+	struct pblk_line *line;
 	struct pblk_smeta *smeta;
 	struct pblk_emeta *emeta;
 	struct line_smeta *smeta_buf;
-	int found_lines = 0, recovered_lines = 0, open_lines = 0;
-	int is_next = 0;
+	int found_lines = 0;
 	int meta_line;
 	int i, valid_uuid = 0;
-	LIST_HEAD(recov_list);
+	*err_no = 0;
+	//LIST_HEAD(recov_list);
 
+	pr_info("--------------------------\n");
 	pr_info("pblk: %s: dev %d\n", __func__, dev_id);
 	//pr_err("pblk rec: func(%s) bug here, never be called in this version\n", __func__);
 	/* TODO: Implement FTL snapshot */
@@ -970,9 +996,14 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 	emeta = l_mg->eline_meta[meta_line];
 	smeta_buf = (struct line_smeta *)smeta;
 	spin_unlock(&l_mg->free_lock);
+	*meta_line_ptr = meta_line;
 
 	/* Order data lines using their sequence number */
 	for (i = 0; i < l_mg->nr_lines; i++) {
+
+		if (i > 20)
+			break;
+
 		u32 crc;
 
 		line = &pblk->lines[dev_id][i];
@@ -1007,7 +1038,8 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 		if (smeta_buf->header.version_major != SMETA_VERSION_MAJOR) {
 			pr_err("pblk: found incompatible line version %u\n",
 					smeta_buf->header.version_major);
-			return ERR_PTR(-EINVAL);
+			*err_no = -EINVAL;
+			return found_lines;
 		}
 
 		/* The first valid instance uuid is used for initialization */
@@ -1044,16 +1076,19 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 		l_mg->nr_free_lines--;
 		spin_unlock(&l_mg->free_lock);
 
-		if (pblk_line_recov_alloc(pblk, line))
-			goto out;
+		if (pblk_line_recov_alloc(pblk, line)) {
+			*err_no = -EINVAL;
+			return found_lines;
+		}
 
-		pblk_recov_line_add_ordered(&recov_list, line);
+		pblk_recov_line_add_ordered(recov_list, line);
 		found_lines++;
 		pr_debug("pblk: recovering data line %d, seq:%llu\n",
 						line->id, smeta_buf->seq_nr);
 	}
 
-	pr_info("pblk: %s: found %d line to rec\n", __func__, found_lines);
+	pr_info("pblk: %s: found %d line of dev %d to rec\n",
+			__func__, found_lines, dev_id);
 
 	if (!found_lines) {
 		pblk_setup_uuid(pblk);
@@ -1063,8 +1098,26 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 							&l_mg->meta_bitmap));
 		spin_unlock(&l_mg->free_lock);
 
-		goto out;
 	}
+	pr_info("--------------------------\n");
+	return found_lines;
+}
+
+struct pblk_line * pblk_recov_l2p_sd(struct pblk *pblk)
+{
+	int dev_id = DEFAULT_DEV_ID;
+	struct pblk_line_meta *lm = &pblk->lm;
+	struct pblk_line_mgmt *l_mg = &pblk->l_mg[dev_id];
+	int meta_line, err_no;
+	LIST_HEAD(recov_list);
+	int found_lines = pblk_recov_smeta_dev(pblk, dev_id, &recov_list, &meta_line, &err_no);
+	int recovered_lines = 0, open_lines = 0;
+	int is_next = 0;
+
+	struct pblk_line *line, *tline, *data_line = NULL;
+	struct pblk_emeta *emeta = l_mg->eline_meta[meta_line];
+if (!found_lines || err_no < 0) 
+		goto out;
 
 	/* Verify closed blocks and recover this portion of L2P table*/
 	list_for_each_entry_safe(line, tline, &recov_list, list) {
@@ -1156,6 +1209,189 @@ out:
 						found_lines, recovered_lines);
 
 	return data_line;
+}
+
+int pblk_check_found_lines(int found_lines[], int nr_dev) {
+	int x = found_lines[0], i;
+	for (i = 1; i < nr_dev; i++) {
+		if (found_lines[i] != x) {
+			pr_err("pblk: %s: found_lines[%d] %d not equal to found_lines[0] %d\n",
+					__func__, i, found_lines[i], x);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+int pblk_recov_emeta_dev(struct pblk *pblk, struct pblk_line *line, struct pblk_emeta *emeta) 
+{
+	int dev_id = line->dev_id;
+	struct pblk_line_meta *lm = &pblk->lm;
+	line->emeta_ssec = pblk_line_emeta_start(pblk, line);
+	line->emeta = emeta;
+	memset(line->emeta->buf, 0, lm->emeta_len[0]);
+	pr_info("pblk: %s: read emata line_id = %d of dev %d\n",
+			__func__, line->id, dev_id);
+
+	if (pblk_line_read_emeta(pblk, line, line->emeta->buf)) {
+		pr_err("pblk: %s line %d partial written. Abort.We leave this case as future work\n",
+				__func__, line->id);
+		return (-EINVAL);
+	}
+
+	if (pblk_recov_check_emeta(pblk, line->emeta->buf)) {
+		return (-EINVAL);
+	}
+
+	if (pblk_recov_check_line_version(pblk, line->emeta->buf))
+		return (-EINVAL);
+
+	pblk_recov_wa_counters(pblk, line->emeta->buf);
+
+	if (pblk_recov_l2p_from_emeta(pblk, line)) {
+		pr_err("pblk: %s: recov l2p from emeta of line %d fail. Abort\n",
+				__func__, line->id);
+		return (-EINVAL);
+	}
+
+	return 0;
+
+	
+}
+
+struct pblk_line *pblk_recov_l2p_raid0(struct pblk *pblk)
+{
+	struct pblk_line *line[NVM_MD_MAX_DEV_CNT];
+	struct pblk_line *tline[NVM_MD_MAX_DEV_CNT];
+	struct pblk_line_mgmt *l_mg[NVM_MD_MAX_DEV_CNT];
+
+	struct pblk_smeta *smeta[NVM_MD_MAX_DEV_CNT];
+	struct pblk_emeta *emeta[NVM_MD_MAX_DEV_CNT];
+	struct line_smeta *smeta_buf[NVM_MD_MAX_DEV_CNT];
+	int found_lines[NVM_MD_MAX_DEV_CNT];
+	int meta_line[NVM_MD_MAX_DEV_CNT];
+	int err_no[NVM_MD_MAX_DEV_CNT];
+	struct list_head recov_list[NVM_MD_MAX_DEV_CNT];
+	struct line_emeta *emeta_buf;
+	int recovered_lines = 0;
+	int dev_id, i;
+
+	for (i = 0; i < pblk->nr_dev; i++) {
+		dev_id = i;
+		l_mg[i] = &pblk->l_mg[i];
+
+		INIT_LIST_HEAD(&recov_list[i]);
+		found_lines[i] = pblk_recov_smeta_dev(pblk, dev_id, &recov_list[i], &meta_line[i], &err_no[i]);
+		if (!found_lines[i] || err_no[i] < 0) {
+			pr_err("pblk: %s: recov_smeta of dev %d fail\n", 
+					__func__, dev_id);
+			return ERR_PTR(-EINVAL);
+		}
+
+		smeta[i] = l_mg[i]->sline_meta[meta_line[i]];
+		emeta[i] = l_mg[i]->eline_meta[meta_line[i]];
+		smeta_buf[i] = (struct line_smeta *)smeta;
+	}
+
+	if (pblk_check_found_lines(found_lines, pblk->nr_dev)) {
+		pr_err("pblk: %s: found_lines not equal, abort\n", __func__);
+		return ERR_PTR(-EINVAL);
+	}
+
+	//pr_info("pblk: %s: stop before read emeta\n", __func__);
+	//return ERR_PTR(-EINVAL);
+
+	/* Verify closed blocks and recover this portion of L2P table*/
+	
+	for (i = 1; i < pblk->nr_dev; i++)
+		line[i] = list_first_entry(&recov_list[i], typeof(*line[i]), list);
+
+	list_for_each_entry_safe(line[0], tline[0], &recov_list[0], list) {
+		recovered_lines++;
+		for (i = 1; i < pblk->nr_dev; i++) {
+			tline[i] = list_next_entry(line[i], list);
+		}
+		/*
+		for (i = 0; i < pblk->nr_dev; i++) {
+			pr_info("pblk: %s: recov emeta line %d dev %d\n",
+					__func__, line[i]->id, i);
+		*/
+		for (i = 0; i < pblk->nr_dev; i++) {
+			pr_info("pblk: %s: recov emeta line %d dev %d\n",
+					__func__, line[i]->id, i);
+			if (pblk_recov_emeta_dev(pblk, line[i], emeta[i])) {
+				pr_err("pblk: %s: err to recov emeta line %d of dev %d\n", 
+						__func__, line[0]->id, line[0]->dev_id);
+				return ERR_PTR(-EINVAL);
+			}
+		}
+		pr_info("pblk: %s: rec md_line seq_nr %d finish\n",
+				__func__, line[0]->seq_nr);
+
+		emeta_buf = line[0]->emeta->buf;
+		for (i = 1; i < pblk->nr_dev; i++) {
+			if (memcmp(line[i]->emeta->buf->line_units, emeta_buf->line_units, 
+				sizeof(struct pblk_md_line_unit_le)*pblk->nr_dev)) {
+				pr_err("pblk: %s: corrupt line id %d, seq_nr %d emeta line_units\n", 
+						__func__, line[0]->id, line[0]->seq_nr);
+				return ERR_PTR(-EINVAL);
+			}
+		}
+		pr_info("pblk: %s: md_line seq_nr %d md_info PASS\n",
+				__func__, line[0]->seq_nr);
+
+		for (i = 0; i < pblk->nr_dev; i++) {
+			if (pblk_line_is_full(line[i])) {
+				pr_info("pblk: %s: rec line %d of dev %d is full\n",
+						__func__, line[i]->id, line[i]->dev_id);
+				struct list_head *move_list;
+
+				spin_lock(&line[i]->lock);
+				line[i]->state = PBLK_LINESTATE_CLOSED;
+				move_list = pblk_line_gc_list(pblk, line[i]);
+				spin_unlock(&line[i]->lock);
+
+				spin_lock(&l_mg[i]->gc_lock);
+				list_move_tail(&line[i]->list, move_list);
+				spin_unlock(&l_mg[i]->gc_lock);
+
+				kfree(line[i]->map_bitmap);
+				line[i]->map_bitmap = NULL;
+				line[i]->smeta = NULL;
+				line[i]->emeta = NULL;
+			} else {
+				pr_err("pblk: %s: recov line %d of dev %d not full\n",
+						__func__, line[i]->id, line[i]->dev_id);
+				return ERR_PTR(-EINVAL);
+			}
+		}
+		for (i = 1; i < pblk->nr_dev; i++)
+			line[i] = tline[i];
+	}
+
+	for (i = 0; i < pblk->nr_dev; i++) {
+		spin_lock(&l_mg[i]->free_lock);
+		WARN_ON_ONCE(!test_and_clear_bit(meta_line[i], &l_mg[i]->meta_bitmap)); 
+		pblk_line_replace_data(pblk, i);
+		spin_unlock(&l_mg[i]->free_lock);
+	}
+
+	pr_info("pblk: %s: recov raid0 succ\n", __func__);
+
+	return NULL;
+}
+
+struct pblk_line *pblk_recov_l2p(struct pblk  *pblk)
+{
+	switch (pblk->md_mode) {
+		case PBLK_SD:
+			return pblk_recov_l2p_sd(pblk);
+		case PBLK_RAID0:
+			return pblk_recov_l2p_raid0(pblk);
+		default:
+			pr_err("pblk: %s: %d not supported now\n", __func__, pblk->md_mode);
+			return ERR_PTR(-EINVAL);
+	}
 }
 
 /*

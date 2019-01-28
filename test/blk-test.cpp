@@ -18,10 +18,8 @@ using namespace std;
 #include "common.h"
 
 #define NR_SECTORS	128
-#define SECTOR_SIZE	(4096)
 
 
-#define DEVICE_NAME	"/dev/pblk_sd"
 #define MODULE_NAME	"ram-disk"
 #define MY_BLOCK_MAJOR	"240"
 #define MY_BLOCK_MINOR	"0"

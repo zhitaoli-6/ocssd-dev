@@ -20,7 +20,7 @@
     } while(0)
 
 #define SECTOR_SIZE	(4096)
-#define DEVICE_NAME	"/dev/pblk_sd"
+#define DEVICE_NAME	"/dev/pblk_md"
 
 
 #define O_RAND (1)

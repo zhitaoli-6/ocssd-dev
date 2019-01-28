@@ -47,6 +47,249 @@ static void pblk_md_new_group(struct pblk *pblk)
 		group->line_units[dev_id].dev_id = dev_id;
 		group->line_units[dev_id].line_id = line->id;
 	}
+	
+	
+	for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
+		line = pblk_line_get_data(pblk, dev_id);
+		pblk_line_setup_emeta_md(pblk, line);
+	}
+}
+
+static void pblk_map_prepare_rqd_sd(struct pblk *pblk, struct pblk_line *line,
+		struct nvm_rq *rqd, unsigned int sentry,
+		struct ppa_addr *ppa_list, struct pblk_sec_meta *meta_list, int i) 
+{
+	int dev_id = line->dev_id;
+	struct nvm_tgt_dev *dev = pblk->devs[dev_id]; //add by kan
+    struct nvm_geo *geo = &dev->geo; //add by kan 
+
+	int meta_list_idx = i / geo->ws_min;
+	int meta_list_mod = ppa_list[i].m.sec % geo->ws_min;
+
+	struct pblk_emeta *emeta = line->emeta;
+	struct pblk_w_ctx *w_ctx;
+	__le64 *lba_list = emeta_to_lbas(pblk, emeta->buf);
+	__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
+	int nr_secs = pblk->min_write_pgs;
+	u64 paddr = pblk_dev_ppa_to_line_addr(pblk, ppa_list[i]);
+	struct ppa_addr dev_ppa;
+
+	// fill rqd meta_list, line lba_list, rwb w_ctx
+	kref_get(&line->ref);
+	dev_ppa = pblk_set_ppa_dev_id(ppa_list[i], line->dev_id);
+	w_ctx = pblk_rb_w_ctx(&pblk->rwb, sentry + i);
+	w_ctx->ppa = dev_ppa; // modified by zhitao
+
+	meta_list[meta_list_idx].lba[meta_list_mod] = cpu_to_le64(w_ctx->lba);//modify by kan for debug
+	meta_list[meta_list_idx].d_idx[meta_list_mod] = meta_list_idx; //add by kan for debug
+	meta_list[meta_list_idx].d_mod[meta_list_mod] = meta_list_mod; //add by kan for debug
+	meta_list[meta_list_idx].d_ppa[meta_list_mod] = ppa_list[i].ppa; //add by kan for debug
+	meta_list[meta_list_idx].d_sec_stripe = geo->ws_min; //add by kan for debug
+	meta_list[meta_list_idx].d_nr_secs = nr_secs; //add by kan for debug
+
+	lba_list[paddr] = cpu_to_le64(w_ctx->lba);
+	if (lba_list[paddr] != addr_empty)
+		line->nr_valid_lbas++;
+	else
+		atomic64_inc(&pblk->pad_wa);
+}
+
+static void pblk_map_prepare_rqd_raid1(struct pblk *pblk, struct pblk_line *line,
+		struct nvm_rq *rqd, unsigned int sentry,
+		struct ppa_addr *ppa_list, struct pblk_sec_meta *meta_list, int i) 
+{
+	struct pblk_c_ctx *c_ctx = nvm_rq_to_pdu(rqd);
+	int dev_id = line->dev_id;
+	struct nvm_tgt_dev *dev = pblk->devs[dev_id]; //add by kan
+    struct nvm_geo *geo = &dev->geo; //add by kan 
+
+	int meta_list_idx = i / geo->ws_min;
+	int meta_list_mod = ppa_list[i].m.sec % geo->ws_min;
+
+	struct pblk_emeta *emeta = line->emeta;
+	struct pblk_w_ctx *w_ctx;
+	__le64 *lba_list = emeta_to_lbas(pblk, emeta->buf);
+	__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
+	int nr_secs = pblk->min_write_pgs;
+	u64 paddr = pblk_dev_ppa_to_line_addr(pblk, ppa_list[i]);
+	struct ppa_addr dev_ppa;
+
+	w_ctx = pblk_rb_w_ctx(&pblk->rwb, sentry + i);
+	// fill rqd meta_list, line lba_list, rwb w_ctx
+	if (c_ctx->map_id == dev_id) {
+		// map_id as primary backup 
+		kref_get(&line->ref);
+		dev_ppa = pblk_set_ppa_dev_id(ppa_list[i], line->dev_id);
+		w_ctx->ppa = dev_ppa; // modified by zhitao
+	}
+
+	meta_list[meta_list_idx].lba[meta_list_mod] = cpu_to_le64(w_ctx->lba);//modify by kan for debug
+	meta_list[meta_list_idx].d_idx[meta_list_mod] = meta_list_idx; //add by kan for debug
+	meta_list[meta_list_idx].d_mod[meta_list_mod] = meta_list_mod; //add by kan for debug
+	meta_list[meta_list_idx].d_ppa[meta_list_mod] = ppa_list[i].ppa; //add by kan for debug
+	meta_list[meta_list_idx].d_sec_stripe = geo->ws_min; //add by kan for debug
+	meta_list[meta_list_idx].d_nr_secs = nr_secs; //add by kan for debug
+
+	lba_list[paddr] = cpu_to_le64(w_ctx->lba);
+	if (lba_list[paddr] != addr_empty)
+		line->nr_valid_lbas++;
+	else
+		atomic64_inc(&pblk->pad_wa);
+}
+
+// Clear same lba in the same line group
+// Naive solution now; Red-black tree can be used in future work
+static inline void pblk_clear_group_lba_raid0(struct pblk *pblk, u64 paddr, __le64 lba)
+{
+	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
+	struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
+	struct pblk_line *line;
+	struct pblk_emeta *emeta;
+	__le64 *lba_list;
+	int unit_id, dev_id;
+	u64 p;
+	__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
+
+	pr_info("pblk: %s: paddr %llu lba %llu le_lba %llu\n", 
+			__func__, paddr, le64_to_cpu(lba), lba);
+
+	for (p = 0; p < paddr; p++) {
+		for (unit_id = 0; unit_id < group->nr_unit; unit_id++) {
+			dev_id = group->line_units[unit_id].dev_id;
+
+			line = pblk_line_get_data(pblk, dev_id);
+			emeta = line->emeta;
+			lba_list = emeta_to_lbas(pblk, emeta->buf);
+
+			if (lba_list[p] == lba) {
+				lba_list[p] = addr_empty;
+			}
+		}
+	}
+}
+
+static inline void pblk_clear_group_lba_raid5(struct pblk *pblk, u64 paddr, __le64 lba)
+{
+	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
+	struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
+	struct pblk_line *line; struct pblk_emeta *emeta; __le64 *lba_list;
+	int unit_id, dev_id;
+	int parity_id = group->nr_unit - 1;
+	int parity_dev_id =  group->line_units[parity_id].dev_id;
+	line = pblk_line_get_data(pblk, parity_dev_id);
+	emeta = line->emeta;
+	__le64 *parity_lba_list = emeta_to_lbas(pblk, emeta->buf);
+	u64 p;
+	__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
+
+
+	for (p = 0; p < paddr; p++) {
+		for (unit_id = 0; unit_id < group->nr_unit - 1; unit_id++) {
+			dev_id = group->line_units[unit_id].dev_id;
+
+			line = pblk_line_get_data(pblk, dev_id);
+			emeta = line->emeta;
+			lba_list = emeta_to_lbas(pblk, emeta->buf);
+
+			if (lba_list[p] == lba) {
+				lba_list[p] = addr_empty;
+				// bug: partial stripe parity
+				parity_lba_list[p] = parity_lba_list[p] ^ lba ^ addr_empty;
+			}
+		}
+	}
+}
+
+static void pblk_map_prepare_rqd_raid0(struct pblk *pblk, struct pblk_line *line,
+		struct nvm_rq *rqd, unsigned int sentry,
+		struct ppa_addr *ppa_list, struct pblk_sec_meta *meta_list, int i) 
+{
+	int dev_id = line->dev_id;
+	struct nvm_tgt_dev *dev = pblk->devs[dev_id]; //add by kan
+    struct nvm_geo *geo = &dev->geo; //add by kan 
+
+	int meta_list_idx = i / geo->ws_min;
+	int meta_list_mod = ppa_list[i].m.sec % geo->ws_min;
+
+	struct pblk_emeta *emeta = line->emeta;
+	struct pblk_w_ctx *w_ctx;
+	__le64 *lba_list = emeta_to_lbas(pblk, emeta->buf);
+	__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
+	int nr_secs = pblk->min_write_pgs;
+	u64 paddr = pblk_dev_ppa_to_line_addr(pblk, ppa_list[i]);
+	struct ppa_addr dev_ppa;
+
+	// fill rqd meta_list, line lba_list, rwb w_ctx
+	kref_get(&line->ref);
+	dev_ppa = pblk_set_ppa_dev_id(ppa_list[i], line->dev_id);
+	w_ctx = pblk_rb_w_ctx(&pblk->rwb, sentry + i);
+	w_ctx->ppa = dev_ppa; // modified by zhitao
+
+	meta_list[meta_list_idx].lba[meta_list_mod] = cpu_to_le64(w_ctx->lba);//modify by kan for debug
+	meta_list[meta_list_idx].d_idx[meta_list_mod] = meta_list_idx; //add by kan for debug
+	meta_list[meta_list_idx].d_mod[meta_list_mod] = meta_list_mod; //add by kan for debug
+	meta_list[meta_list_idx].d_ppa[meta_list_mod] = ppa_list[i].ppa; //add by kan for debug
+	meta_list[meta_list_idx].d_sec_stripe = geo->ws_min; //add by kan for debug
+	meta_list[meta_list_idx].d_nr_secs = nr_secs; //add by kan for debug
+
+	lba_list[paddr] = cpu_to_le64(w_ctx->lba);
+	if (lba_list[paddr] != addr_empty) {
+		pblk_clear_group_lba_raid0(pblk, paddr, cpu_to_le64(w_ctx->lba));
+		line->nr_valid_lbas++;
+	}
+	else
+		atomic64_inc(&pblk->pad_wa);
+}
+
+static void pblk_map_prepare_rqd_raid5(struct pblk *pblk, struct pblk_line *line,
+		struct nvm_rq *rqd, unsigned int sentry,
+		struct ppa_addr *ppa_list, struct pblk_sec_meta *meta_list, int i) 
+{
+	struct pblk_c_ctx *c_ctx= nvm_rq_to_pdu(rqd);
+	int dev_id = line->dev_id;
+	struct nvm_tgt_dev *dev = pblk->devs[dev_id]; //add by kan
+    struct nvm_geo *geo = &dev->geo; //add by kan 
+
+	int meta_list_idx = i / geo->ws_min;
+	int meta_list_mod = ppa_list[i].m.sec % geo->ws_min;
+
+	struct pblk_emeta *emeta = line->emeta;
+	struct pblk_w_ctx *w_ctx;
+	__le64 *lba_list = emeta_to_lbas(pblk, emeta->buf);
+	__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
+	__le64 lba;
+	int nr_secs = pblk->min_write_pgs;
+	u64 paddr = pblk_dev_ppa_to_line_addr(pblk, ppa_list[i]);
+	struct ppa_addr dev_ppa;
+	
+	if (!pblk_id_is_parity(pblk, c_ctx->md_id)) {
+		// fill rqd meta_list, line lba_list, rwb w_ctx
+		kref_get(&line->ref);
+		dev_ppa = pblk_set_ppa_dev_id(ppa_list[i], line->dev_id);
+		w_ctx = pblk_rb_w_ctx(&pblk->rwb, sentry + i);
+		w_ctx->ppa = dev_ppa; // modified by zhitao
+		lba = w_ctx->lba;
+		// calculate parity of data and metadata
+	} else {
+		lba = pblk->md_line_group_set.lba_list[i];;
+	}
+
+	meta_list[meta_list_idx].lba[meta_list_mod] = cpu_to_le64(lba);//modify by kan for debug
+	meta_list[meta_list_idx].d_idx[meta_list_mod] = meta_list_idx; //add by kan for debug
+	meta_list[meta_list_idx].d_mod[meta_list_mod] = meta_list_mod; //add by kan for debug
+	meta_list[meta_list_idx].d_ppa[meta_list_mod] = ppa_list[i].ppa; //add by kan for debug
+	meta_list[meta_list_idx].d_sec_stripe = geo->ws_min; //add by kan for debug
+	meta_list[meta_list_idx].d_nr_secs = nr_secs; //add by kan for debug
+
+	lba_list[paddr] = cpu_to_le64(lba);
+	if (lba_list[paddr] != addr_empty) {
+		if (!pblk_id_is_parity(pblk, c_ctx->md_id)) {
+			pblk_clear_group_lba_raid5(pblk, paddr, cpu_to_le64(lba));
+		}
+		line->nr_valid_lbas++;
+	}
+	else
+		atomic64_inc(&pblk->pad_wa);
 }
 
 static void pblk_map_page_data(struct pblk *pblk, struct nvm_rq *rqd, unsigned int sentry,
@@ -55,19 +298,16 @@ static void pblk_map_page_data(struct pblk *pblk, struct nvm_rq *rqd, unsigned i
 			       struct pblk_sec_meta *meta_list,
 			       unsigned int valid_secs, int dev_id)
 {
-	struct pblk_c_ctx *c_ctx = nvm_rq_to_pdu(rqd);
 	struct pblk_line *line = pblk_line_get_data(pblk, dev_id);
 	struct pblk_emeta *emeta;
-	struct pblk_w_ctx *w_ctx;
 	__le64 *lba_list;
 	u64 paddr;
-	struct ppa_addr dev_ppa;
-	int nr_secs = pblk->min_write_pgs;
 	int i;
     int meta_list_idx; //add by kan
     int meta_list_mod; //add by kan
 	struct nvm_tgt_dev *dev = pblk->devs[dev_id]; //add by kan
     struct nvm_geo *geo = &dev->geo; //add by kan 
+	int nr_secs = pblk->min_write_pgs;
 
 	if (pblk_line_is_full(line)) {
 		// if this line is full, then other lines in the same group all are full
@@ -79,11 +319,12 @@ static void pblk_map_page_data(struct pblk *pblk, struct nvm_rq *rqd, unsigned i
 			line = pblk_line_replace_data(pblk, line->dev_id);
 			pblk_line_close_meta(pblk, prev_line);
 		}
+		pr_info("pblk: %s: now line %d seq_no %d take charge\n", 
+				__func__, line->id, line->seq_nr);
 	}
 
 	emeta = line->emeta;
 	lba_list = emeta_to_lbas(pblk, emeta->buf);
-
 	paddr = pblk_alloc_page(pblk, line, nr_secs);
 
 	for (i = 0; i < nr_secs; i++, paddr++) {
@@ -103,40 +344,25 @@ static void pblk_map_page_data(struct pblk *pblk, struct nvm_rq *rqd, unsigned i
         meta_list_mod = ppa_list[i].m.sec % geo->ws_min;
 			
 		if (i < valid_secs) {
-			if (pblk_is_raid1(pblk) && c_ctx->map_id == dev_id) 
-				goto fill_rqd;
-			else if (pblk_is_raid5(pblk) && !pblk_id_is_parity(pblk, c_ctx->md_id))
-				goto fill_rqd;
-			else if (!pblk_is_raid1or5(pblk))
-				goto fill_rqd;
-			else
-				continue;
-fill_rqd:
-			kref_get(&line->ref);
-			dev_ppa = pblk_set_ppa_dev_id(ppa_list[i], line->dev_id);
-			w_ctx = pblk_rb_w_ctx(&pblk->rwb, sentry + i);
-			w_ctx->ppa = dev_ppa; // modified by zhitao
-			//w_ctx->ppa = ppa_list[i]; // modified by zhitao
-			meta_list[meta_list_idx].lba[meta_list_mod] = cpu_to_le64(w_ctx->lba);//modify by kan
-
-			//for debug
-			meta_list[meta_list_idx].d_idx[meta_list_mod] = meta_list_idx; //add by kan for debug
-			meta_list[meta_list_idx].d_mod[meta_list_mod] = meta_list_mod; //add by kan for debug
-			meta_list[meta_list_idx].d_ppa[meta_list_mod] = ppa_list[i].ppa; //add by kan for debug
-			meta_list[meta_list_idx].d_sec_stripe = geo->ws_min; //add by kan for debug
-			meta_list[meta_list_idx].d_nr_secs = nr_secs; //add by kan for debug
-
-			lba_list[paddr] = cpu_to_le64(w_ctx->lba);
-			if (lba_list[paddr] != addr_empty)
-				line->nr_valid_lbas++;
-			else
-				atomic64_inc(&pblk->pad_wa);
+			switch (pblk->md_mode) {
+				case PBLK_SD:
+					pblk_map_prepare_rqd_sd(pblk, line, rqd, sentry, ppa_list, meta_list, i);
+					break;
+				case PBLK_RAID0:
+					pblk_map_prepare_rqd_raid0(pblk, line, rqd, sentry, ppa_list, meta_list, i);
+					break;
+				case PBLK_RAID1:
+					pblk_map_prepare_rqd_raid1(pblk, line, rqd, sentry, ppa_list, meta_list, i);
+					break;
+				case PBLK_RAID5:
+					pblk_map_prepare_rqd_raid5(pblk, line, rqd, sentry, ppa_list, meta_list, i);
+					break;
+			}
 		} else {
 			lba_list[paddr] = meta_list[meta_list_idx].lba[meta_list_mod] = addr_empty;//modify by kan
 			__pblk_map_invalidate(pblk, line, paddr);
 		}
 	}
-    
     
 	pblk_down_rq(pblk, ppa_list, nr_secs, lun_bitmap, dev_id);
 }

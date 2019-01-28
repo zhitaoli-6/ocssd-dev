@@ -1090,7 +1090,9 @@ static int pblk_line_init_metadata(struct pblk *pblk, struct pblk_line *line,
 	struct pblk_emeta *emeta = line->emeta;
 	struct line_emeta *emeta_buf = emeta->buf;
 	struct line_smeta *smeta_buf = (struct line_smeta *)line->smeta;
-	int nr_blk_line;
+	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
+	struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
+	int nr_blk_line, i;
 
 	/* After erasing the line, new bad blocks might appear and we risk
 	 * having an invalid line
@@ -1160,6 +1162,25 @@ static int pblk_line_init_metadata(struct pblk *pblk, struct pblk_line *line,
 
 	return 1;
 }
+
+void pblk_line_setup_emeta_md(struct pblk *pblk, struct pblk_line *line)
+{	
+	struct pblk_emeta *emeta = line->emeta;
+	struct line_emeta *emeta_buf = emeta->buf;
+	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
+	struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
+	int i;
+
+	/* Fill Md info of emeta */
+	emeta_buf->md_mode = cpu_to_le32(pblk->md_mode);
+	emeta_buf->nr_unit = cpu_to_le32(group->nr_unit);
+	for (i = 0; i < group->nr_unit; i++) {
+		emeta_buf->line_units[i].dev_id = cpu_to_le32(group->line_units[i].dev_id);
+		emeta_buf->line_units[i].line_id = cpu_to_le32(group->line_units[i].line_id);
+	}
+}
+
+
 
 /* For now lines are always assumed full lines. Thus, smeta former and current
  * lun bitmaps are omitted.
@@ -1574,11 +1595,9 @@ void pblk_pipeline_stop(struct pblk *pblk)
 		pr_info("pblk: pad writes of dev %d...\n", dev_id);
 		l_mg = &pblk->l_mg[dev_id];
 
-		/*
-		pr_info("pblk: %s: leave dev %d line %d partial\n", 
-				__func__, dev_id, l_mg->data_line->id);
-		ret = 0;
-		*/
+		pr_info("pblk: %s: leave dev %d line %d left_secs %d partial\n", 
+				__func__, dev_id, l_mg->data_line->id, l_mg->data_line->left_msecs);
+		//ret = 0;
 
 		ret = pblk_recov_pad(pblk, dev_id);
 		if (ret) {

@@ -368,6 +368,9 @@ void pblk_gc_free_full_lines(struct pblk *pblk)
 	struct pblk_gc *gc = &pblk->gc;
 	struct pblk_line *line;
 	int dev_id;
+	
+	//pr_info("pblk: %s: disabled now\n", __func__);
+	return;
 
 	for(dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
 		l_mg = &pblk->l_mg[dev_id];
