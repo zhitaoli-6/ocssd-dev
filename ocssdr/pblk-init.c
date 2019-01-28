@@ -60,7 +60,7 @@ static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
 	pr_info("nvm: %s: op %u, bi_sector %8lu, size %8u, partno %u\n", 
 			pblk->disk->disk_name, bio_op(bio), bio->bi_iter.bi_sector, 
 			bio_sectors(bio), bio->bi_partno);
-	*/
+			*/
 	if (bio_op(bio) == REQ_OP_DISCARD) {
 		pblk_discard(pblk, bio);
 		if (!(bio->bi_opf & REQ_PREFLUSH)) {
@@ -119,16 +119,13 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 		pr_err("pblk: %s: begin recover l2p\n", __func__);
 		line = pblk_recov_l2p(pblk);
 		if (!line) {
-			pr_info("pblk: %s recov line ret NULL\n", __func__);
+			pr_info("pblk: %s recov line ret NULL, expected\n", __func__);
 		}
-		if (IS_ERR(line)) {
+		else {
 			pr_err("pblk: could not recover l2p table\n");
 			return -EFAULT;
 		}
-		/*
-		pr_err("pblk: %s: end recover l2p. stop pblk\n", __func__);
-		return -EFAULT;
-		*/
+		//pr_err("pblk: %s: end recover l2p. stop pblk\n", __func__);
 	}
 
 #ifdef CONFIG_NVM_DEBUG
@@ -143,7 +140,7 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 		struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
 		struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
 		group->nr_unit = pblk->nr_dev;
-		for(dev_id = 0; dev_id < pblk->nr_dev; dev_id++){
+		for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
 			line = pblk_line_get_first_data(pblk, dev_id);
 			if (!line) {
 				pr_err("pblk: line list corrupted at dev_id %d\n", dev_id);
@@ -151,7 +148,12 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 			}
 			group->line_units[dev_id].dev_id = dev_id;
 			group->line_units[dev_id].line_id = line->id;
-			pr_info("pblk: first stripe dev %d line %d\n", dev_id, line->id);
+			pr_info("pblk: first stripe dev %d line %d seq_nr %d\n", dev_id, line->id, line->seq_nr);
+		}
+
+		for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
+			line = pblk_line_get_data(pblk, dev_id);
+			pblk_line_setup_emeta_md(pblk, line);
 		}
 
 		// first stripe of raid
@@ -522,6 +524,7 @@ static void pblk_line_group_free(struct pblk *pblk)
 	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
 	kfree(set->line_groups);
 	kfree(set->parity);
+	kfree(set->lba_list);
 	kfree(set->cpl);
 }
 
@@ -1366,7 +1369,7 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 
 	pblk->devs = devs;
 	pblk->nr_dev = nr_dev;
-	pblk->md_mode = PBLK_SD;
+	pblk->md_mode = PBLK_RAID0;
 
 	pblk->disk = tdisk;
 	pblk->state = PBLK_STATE_RUNNING;
@@ -1435,8 +1438,8 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 
 	ret = pblk_l2p_init(pblk, flags & NVM_TARGET_FACTORY);
 	if (ret) {
-		pr_err("pblk: could not initialize maps\n");
-		goto fail_free_rwb;
+		pr_err("pblk: could not initialize maps. Please remove this blk and try again\n");
+		goto fail_free_l2p;
 	}
 	pr_info("pblk: done pblk_l2p_init\n");
 

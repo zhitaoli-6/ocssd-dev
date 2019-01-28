@@ -47,6 +47,12 @@ static void pblk_md_new_group(struct pblk *pblk)
 		group->line_units[dev_id].dev_id = dev_id;
 		group->line_units[dev_id].line_id = line->id;
 	}
+	
+	
+	for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
+		line = pblk_line_get_data(pblk, dev_id);
+		pblk_line_setup_emeta_md(pblk, line);
+	}
 }
 
 static void pblk_map_prepare_rqd_sd(struct pblk *pblk, struct pblk_line *line,
@@ -144,6 +150,9 @@ static inline void pblk_clear_group_lba_raid0(struct pblk *pblk, u64 paddr, __le
 	u64 p;
 	__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
 
+	pr_info("pblk: %s: paddr %llu lba %llu le_lba %llu\n", 
+			__func__, paddr, le64_to_cpu(lba), lba);
+
 	for (p = 0; p < paddr; p++) {
 		for (unit_id = 0; unit_id < group->nr_unit; unit_id++) {
 			dev_id = group->line_units[unit_id].dev_id;
@@ -163,9 +172,7 @@ static inline void pblk_clear_group_lba_raid5(struct pblk *pblk, u64 paddr, __le
 {
 	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
 	struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
-	struct pblk_line *line;
-	struct pblk_emeta *emeta;
-	__le64 *lba_list;
+	struct pblk_line *line; struct pblk_emeta *emeta; __le64 *lba_list;
 	int unit_id, dev_id;
 	int parity_id = group->nr_unit - 1;
 	int parity_dev_id =  group->line_units[parity_id].dev_id;
@@ -186,6 +193,7 @@ static inline void pblk_clear_group_lba_raid5(struct pblk *pblk, u64 paddr, __le
 
 			if (lba_list[p] == lba) {
 				lba_list[p] = addr_empty;
+				// bug: partial stripe parity
 				parity_lba_list[p] = parity_lba_list[p] ^ lba ^ addr_empty;
 			}
 		}
@@ -311,6 +319,8 @@ static void pblk_map_page_data(struct pblk *pblk, struct nvm_rq *rqd, unsigned i
 			line = pblk_line_replace_data(pblk, line->dev_id);
 			pblk_line_close_meta(pblk, prev_line);
 		}
+		pr_info("pblk: %s: now line %d seq_no %d take charge\n", 
+				__func__, line->id, line->seq_nr);
 	}
 
 	emeta = line->emeta;

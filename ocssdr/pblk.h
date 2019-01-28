@@ -350,6 +350,17 @@ enum {
 	PBLK_LINEGC_FULL = 25,
 };
 
+// md_line
+struct pblk_md_line_unit {
+	int dev_id;
+	int line_id;
+};
+
+struct pblk_md_line_unit_le {
+	__le32 dev_id;
+	__le32 line_id;
+};
+
 #define PBLK_MAGIC 0x70626c6b /*pblk*/
 
 /* emeta/smeta persistent storage format versions:
@@ -414,6 +425,11 @@ struct line_emeta {
 
 	/* Current line metadata */
 	__le64 seq_nr;		/* Sequence number for current line */
+
+	/* MD info */
+	__le32 md_mode;
+	__le32 nr_unit;
+	struct pblk_md_line_unit_le line_units[NVM_MD_MAX_DEV_CNT];
 
 	/* Active writers */
 	__le32 window_wr_lun;	/* Number of parallel LUNs to write */
@@ -635,11 +651,6 @@ struct pblk_schedule_meta {
 	unsigned int unit_id;
 };
 
-struct pblk_md_line_unit {
-	int dev_id;
-	int line_id;
-};
-
 struct pblk_md_line_group {
 	int nr_unit;
 	struct pblk_md_line_unit line_units[NVM_MD_MAX_DEV_CNT];
@@ -855,6 +866,7 @@ struct bio *pblk_bio_map_addr(struct pblk *pblk, void *data,
 struct pblk_line *pblk_line_get(struct pblk *pblk, int dev_id);
 struct pblk_line *pblk_line_get_first_data(struct pblk *pblk, int dev_id);
 struct pblk_line *pblk_line_replace_data(struct pblk *pblk, int dev_id);
+void pblk_line_setup_emeta_md(struct pblk *pblk, struct pblk_line *line);
 int pblk_line_recov_alloc(struct pblk *pblk, struct pblk_line *line);
 void pblk_line_recov_close(struct pblk *pblk, struct pblk_line *line);
 struct pblk_line *pblk_line_get_data(struct pblk *pblk, int dev_id);
@@ -878,9 +890,7 @@ void pblk_line_put(struct kref *ref);
 void pblk_line_put_wq(struct kref *ref);
 struct list_head *pblk_line_gc_list(struct pblk *pblk, struct pblk_line *line);
 u64 pblk_lookup_page(struct pblk *pblk, struct pblk_line *line);
-void pblk_dealloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
-u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
-u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
+void pblk_dealloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs); u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs); u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
 int pblk_calc_secs(struct pblk *pblk, unsigned long secs_avail,
 		   unsigned long secs_to_flush);
 void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas, int dev_id);
