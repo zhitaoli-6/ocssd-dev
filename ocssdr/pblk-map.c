@@ -234,7 +234,7 @@ static void pblk_map_prepare_rqd_raid0(struct pblk *pblk, struct pblk_line *line
 
 	lba_list[paddr] = cpu_to_le64(w_ctx->lba);
 	if (lba_list[paddr] != addr_empty) {
-		pblk_clear_group_lba_raid0(pblk, paddr, cpu_to_le64(w_ctx->lba));
+		//pblk_clear_group_lba_raid0(pblk, paddr, cpu_to_le64(w_ctx->lba));
 		line->nr_valid_lbas++;
 	}
 	else
