@@ -33,5 +33,3 @@ SD/RAID0/RAID1/RAID5 normal path
 * Recover from poweroff
 * Error handling: RAID1/RAID5
 * Perf compared to software raid on multiple pblks
-
-
