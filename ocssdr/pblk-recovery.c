@@ -1000,10 +1000,6 @@ int pblk_recov_smeta_dev(struct pblk *pblk, int dev_id,
 
 	/* Order data lines using their sequence number */
 	for (i = 0; i < l_mg->nr_lines; i++) {
-
-		if (i > 20)
-			break;
-
 		u32 crc;
 
 		line = &pblk->lines[dev_id][i];
@@ -1014,24 +1010,24 @@ int pblk_recov_smeta_dev(struct pblk *pblk, int dev_id,
 						sizeof(struct line_smeta);
 
 		if (!pblk_line_was_written(line, lm)) {
-			pr_info("pblk: %s: line %d not written\n", __func__, i);
+			//pr_info("pblk: %s: line %d not written\n", __func__, i);
 			continue;
 		}
 
 		/* Lines that cannot be read are assumed as not written here */
 		if (pblk_line_read_smeta(pblk, line)) {
-			pr_info("pblk: %s: line %d read smeta fail\n", __func__, i);
+			//pr_info("pblk: %s: line %d read smeta fail\n", __func__, i);
 			continue;
 		}
 
 		crc = pblk_calc_smeta_crc(pblk, smeta_buf);
 		if (le32_to_cpu(smeta_buf->crc) != crc) {
-			pr_info("pblk: %s: line %d crc fail\n", __func__, i);
+			//pr_info("pblk: %s: line %d crc fail\n", __func__, i);
 			continue;
 		}
 
 		if (le32_to_cpu(smeta_buf->header.identifier) != PBLK_MAGIC) {
-			pr_info("pblk: %s: line %d smeta identifier fail\n", __func__, i);
+			//pr_info("pblk: %s: line %d smeta identifier fail\n", __func__, i);
 			continue;
 		}
 
