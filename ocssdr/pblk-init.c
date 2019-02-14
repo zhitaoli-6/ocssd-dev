@@ -140,27 +140,34 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 		struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
 		struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
 		group->nr_unit = pblk->nr_dev;
+		// first md line stripe
 		for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
 			line = pblk_line_get_first_data(pblk, dev_id);
 			if (!line) {
-				pr_err("pblk: line list corrupted at dev_id %d\n", dev_id);
+				pr_err("pblk: get_first_line at dev_id %d fail\n", dev_id);
 				return -EFAULT;
 			}
 			group->line_units[dev_id].dev_id = dev_id;
 			group->line_units[dev_id].line_id = line->id;
-			pr_info("pblk: first stripe dev %d line %d seq_nr %d\n", dev_id, line->id, line->seq_nr);
+			pr_info("pblk: first stripe dev %d line %d seq_nr %d\n",
+					dev_id, line->id, line->seq_nr);
 		}
 
+		// line emeta
 		for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
 			line = pblk_line_get_data(pblk, dev_id);
 			pblk_line_setup_emeta_md(pblk, line);
 		}
 
-		// first stripe of raid
+		// cpl
 		set->cpl->nr_io = group->nr_unit;
 		bitmap_zero(&set->cpl->cpl_map, set->cpl->nr_io);
 		INIT_LIST_HEAD(&set->cpl->cpl_list);
 		spin_lock_init(&set->cpl->lock);
+
+		// line_group l2p rb_tree
+		set->l2p_rb_root = RB_ROOT;
+		set->rb_size = 0;
 	}
 
 	return 0;
@@ -526,6 +533,7 @@ static void pblk_line_group_free(struct pblk *pblk)
 	kfree(set->parity);
 	kfree(set->lba_list);
 	kfree(set->cpl);
+	vfree(set->nodes_buffer);
 }
 
 static void pblk_line_mg_free(struct pblk *pblk, int dev_id)
@@ -1227,9 +1235,18 @@ static int pblk_line_group_init(struct pblk *pblk) {
 		set->cur_group = 0;
 		set->line_groups = kcalloc(set->nr_group, sizeof(struct pblk_md_line_group), GFP_KERNEL);
 
-		set->parity = kzalloc(PBLK_EXPOSED_PAGE_SIZE * pblk->min_write_pgs, GFP_KERNEL);
+		set->parity = kzalloc(PAGE_SIZE * pblk->min_write_pgs, GFP_KERNEL);
 		set->lba_list = kzalloc(sizeof(__le64)*pblk->min_write_pgs, GFP_KERNEL);
 		set->cpl = kzalloc(sizeof(struct pblk_md_cpl), GFP_KERNEL);
+
+		set->nodes_buffer_size = pblk->lm.sec_per_line * pblk->nr_dev;
+		set->nodes_buffer = vmalloc(sizeof(struct group_l2p_node*)*set->nodes_buffer_size);
+		if (!set->nodes_buffer) {
+			pr_err("pblk: can not alloc rb_tree nodes buffer memory\n");
+			return -1;
+		}
+		pr_info("pblk: %s: nodes_buffer ptr %p size %lu\n",
+				__func__, set->nodes_buffer, set->nodes_buffer_size);
 	}
 	return ret;
 }

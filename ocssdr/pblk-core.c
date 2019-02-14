@@ -1180,8 +1180,6 @@ void pblk_line_setup_emeta_md(struct pblk *pblk, struct pblk_line *line)
 	}
 }
 
-
-
 /* For now lines are always assumed full lines. Thus, smeta former and current
  * lun bitmaps are omitted.
  */
@@ -1571,7 +1569,6 @@ static void pblk_line_close_meta_sync(struct pblk *pblk, int dev_id)
 	pblk_wait_for_meta(pblk);
 	flush_workqueue(pblk->close_wq);
 }
-
 
 void pblk_pipeline_stop(struct pblk *pblk)
 {

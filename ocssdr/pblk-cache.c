@@ -27,6 +27,9 @@ int pblk_write_to_cache(struct pblk *pblk, struct bio *bio, unsigned long flags)
 	int nr_entries = pblk_get_secs(bio);
 	int i, ret;
 
+	//pr_info("pblk: %s: total write io %ld\n",
+			//__func__, atomic_long_read(&pblk->req_writes));
+
 	//generic_start_io_acct(q, WRITE, bio_sectors(bio), &pblk->disk->part0);
 
 	/* Update the write buffer head (mem) with the entries that we can

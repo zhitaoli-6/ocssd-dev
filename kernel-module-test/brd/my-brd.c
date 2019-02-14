@@ -24,7 +24,6 @@
 
 #include <linux/uaccess.h>
 
-#define SECTOR_SHIFT		9
 #define PAGE_SECTORS_SHIFT	(PAGE_SHIFT - SECTOR_SHIFT)
 #define PAGE_SECTORS		(1 << PAGE_SECTORS_SHIFT)
 
@@ -288,6 +287,10 @@ static blk_qc_t brd_make_request(struct request_queue *q, struct bio *bio)
 	sector_t sector;
 	struct bvec_iter iter;
 
+	printk(KERN_NOTICE "sbull: %s: op %s, lba %10lu, size %10u, partno %u\n", 
+			bio->bi_disk->disk_name, (bio_data_dir(bio) == WRITE?"write":"read"), 
+			bio->bi_iter.bi_sector, bio_sectors(bio), bio->bi_partno);
+
 	sector = bio->bi_iter.bi_sector;
 	if (bio_end_sector(bio) > get_capacity(bio->bi_disk))
 		goto io_error;
@@ -323,18 +326,9 @@ static int brd_rw_page(struct block_device *bdev, sector_t sector,
 	return err;
 }
 
-static int brd_open(struct block_device *brd, fmode_t mode){
-	return 0;
-}
-
-static void brd_release(struct gendisk *disk, fmode_t mode){
-}
-
 static const struct block_device_operations brd_fops = {
 	.owner =		THIS_MODULE,
 	.rw_page =		brd_rw_page,
-	.open = brd_open,
-	.release = brd_release
 };
 
 /*
@@ -344,7 +338,7 @@ static int rd_nr = 1;
 module_param(rd_nr, int, S_IRUGO);
 MODULE_PARM_DESC(rd_nr, "Maximum number of brd devices");
 
-unsigned long rd_size = 65536;
+unsigned long rd_size = CONFIG_BLK_DEV_RAM_SIZE;
 module_param(rd_size, ulong, S_IRUGO);
 MODULE_PARM_DESC(rd_size, "Size of each RAM disk in kbytes.");
 
@@ -353,12 +347,8 @@ module_param(max_part, int, S_IRUGO);
 MODULE_PARM_DESC(max_part, "Num Minors to reserve between devices");
 
 MODULE_LICENSE("GPL");
-
-static int myramdisk_major = 251;
-
-
-//MODULE_ALIAS_BLOCKDEV_MAJOR(myramdisk_major);
-//MODULE_ALIAS("rd");
+MODULE_ALIAS_BLOCKDEV_MAJOR(RAMDISK_MAJOR);
+MODULE_ALIAS("rd");
 
 #ifndef MODULE
 /* Legacy boot options - nonmodular */
@@ -406,8 +396,8 @@ static struct brd_device *brd_alloc(int i)
 	disk = brd->brd_disk = alloc_disk(max_part);
 	if (!disk)
 		goto out_free_queue;
-	disk->major		= myramdisk_major;
-	disk->first_minor	= 0;
+	disk->major		= RAMDISK_MAJOR;
+	disk->first_minor	= i * max_part;
 	disk->fops		= &brd_fops;
 	disk->private_data	= brd;
 	disk->queue		= brd->brd_queue;
@@ -469,7 +459,7 @@ static struct kobject *brd_probe(dev_t dev, int *part, void *data)
 
 	mutex_lock(&brd_devices_mutex);
 	brd = brd_init_one(MINOR(dev) / max_part, &new);
-	kobj = brd ? get_disk(brd->brd_disk) : NULL;
+	kobj = brd ? get_disk_and_module(brd->brd_disk) : NULL;
 	mutex_unlock(&brd_devices_mutex);
 
 	if (new)
@@ -498,7 +488,7 @@ static int __init brd_init(void)
 	 *	dynamically.
 	 */
 
-	if (register_blkdev(myramdisk_major, "ramdisk"))
+	if (register_blkdev(RAMDISK_MAJOR, "ramdisk"))
 		return -EIO;
 
 	if (unlikely(!max_part))
@@ -516,7 +506,7 @@ static int __init brd_init(void)
 	list_for_each_entry(brd, &brd_devices, brd_list)
 		add_disk(brd->brd_disk);
 
-	blk_register_region(MKDEV(myramdisk_major, 0), 1UL << MINORBITS,
+	blk_register_region(MKDEV(RAMDISK_MAJOR, 0), 1UL << MINORBITS,
 				  THIS_MODULE, brd_probe, NULL, NULL);
 
 	pr_info("brd: module loaded\n");
@@ -527,7 +517,7 @@ out_free:
 		list_del(&brd->brd_list);
 		brd_free(brd);
 	}
-	unregister_blkdev(myramdisk_major, "ramdisk");
+	unregister_blkdev(RAMDISK_MAJOR, "ramdisk");
 
 	pr_info("brd: module NOT loaded !!!\n");
 	return -ENOMEM;
@@ -540,8 +530,8 @@ static void __exit brd_exit(void)
 	list_for_each_entry_safe(brd, next, &brd_devices, brd_list)
 		brd_del_one(brd);
 
-	blk_unregister_region(MKDEV(myramdisk_major, 0), 1UL << MINORBITS);
-	unregister_blkdev(myramdisk_major, "ramdisk");
+	blk_unregister_region(MKDEV(RAMDISK_MAJOR, 0), 1UL << MINORBITS);
+	unregister_blkdev(RAMDISK_MAJOR, "ramdisk");
 
 	pr_info("brd: module unloaded\n");
 }
