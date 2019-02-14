@@ -533,7 +533,7 @@ static void pblk_line_group_free(struct pblk *pblk)
 	kfree(set->parity);
 	kfree(set->lba_list);
 	kfree(set->cpl);
-	kfree(set->nodes_buffer);
+	vfree(set->nodes_buffer);
 }
 
 static void pblk_line_mg_free(struct pblk *pblk, int dev_id)
@@ -1240,7 +1240,13 @@ static int pblk_line_group_init(struct pblk *pblk) {
 		set->cpl = kzalloc(sizeof(struct pblk_md_cpl), GFP_KERNEL);
 
 		set->nodes_buffer_size = pblk->lm.sec_per_line * pblk->nr_dev;
-		set->nodes_buffer = kzalloc(sizeof(struct group_l2p_node*)*set->nodes_buffer_size, GFP_KERNEL);
+		set->nodes_buffer = vmalloc(sizeof(struct group_l2p_node*)*set->nodes_buffer_size);
+		if (!set->nodes_buffer) {
+			pr_err("pblk: can not alloc rb_tree nodes buffer memory\n");
+			return -1;
+		}
+		pr_info("pblk: %s: nodes_buffer ptr %p size %lu\n",
+				__func__, set->nodes_buffer, set->nodes_buffer_size);
 	}
 	return ret;
 }

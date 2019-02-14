@@ -183,9 +183,12 @@ static inline void pblk_clean_group_lba_raid0(struct pblk *pblk, int dev_id, u64
 		if (le64_to_cpu(lba_list[l2p_node->paddr]) != lba) {
 			pr_err("pblk: %s: corrupt rb search\n", __func__);
 		}
+		/*
 		pr_info("pblk: %s: lba %llu replace dev %d paddr %llu with dev %d paddr %llu\n",
 				__func__, lba, l2p_node->dev_id, l2p_node->paddr, dev_id, paddr);
+				*/
 		lba_list[l2p_node->paddr] = addr_empty;
+		line->nr_valid_lbas--;
 
 		kfree(l2p_node);
 	} else {
@@ -193,8 +196,10 @@ static inline void pblk_clean_group_lba_raid0(struct pblk *pblk, int dev_id, u64
 			pr_err("pblk: %s: corrupt rb insert\n", __func__);
 		}
 		set->rb_size++;
-		pr_info("pblk: %s: insert dev %d paddr %llu lba %llu into rb, rb_size %d\n",
-				__func__, dev_id, paddr, lba, set->rb_size);
+		/*
+		pr_info("pblk: %s: lba %llu insert dev %d paddr %llu into rb, rb_size %d\n",
+				__func__, lba, dev_id, paddr, set->rb_size);
+				*/
 	}
 
 	/*
@@ -357,6 +362,8 @@ static void pblk_map_page_data(struct pblk *pblk, struct nvm_rq *rqd, unsigned i
 
 	if (pblk_line_is_full(line)) {
 		// if this line is full, then other lines in the same group all are full
+		pr_info("pblk: %s: line %d of dev %d is full\n", 
+				__func__, line->id, line->dev_id);
 		if (!pblk_is_sd(pblk)) {
 			pblk_md_new_group(pblk);
 			line = pblk_line_get_data(pblk, dev_id);

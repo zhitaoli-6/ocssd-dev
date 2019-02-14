@@ -35,7 +35,7 @@ static void fill_data(){
 		if (O_RAND)
 			rand_data(_w_buf, SECTOR_SIZE);
 
-		lseek(fd, sector * SECTOR_SIZE, SEEK_SET);
+		lseek(fd, 1ll * sector * SECTOR_SIZE, SEEK_SET);
 		size_t cnt = write(fd, _w_buf, SECTOR_SIZE);
 		cout <<  "write page_no " << page << " ";
 		cout << (cnt == SECTOR_SIZE ? "pass" : "fail") << endl;
@@ -65,7 +65,7 @@ static void inject_same_ppa(){
 			if (O_RAND)
 				rand_data(_w_buf, SECTOR_SIZE);
 
-			lseek(fd, sector * SECTOR_SIZE, SEEK_SET);
+			lseek(fd, 1ll * sector * SECTOR_SIZE, SEEK_SET);
 			size_t cnt = write(fd, _w_buf, SECTOR_SIZE);
 			cout <<  "write page_no " << page << " ";
 			cout << (cnt == SECTOR_SIZE ? "pass" : "fail") << endl;
@@ -81,8 +81,8 @@ int main()
 {
 	struct timeval t1, t2;
 	gettimeofday(&t1, NULL);
-	//fill_data();
-	inject_same_ppa();
+	fill_data();
+	//inject_same_ppa();
 	gettimeofday(&t2, NULL);
 	printf("bench: BW %.2fMB/s\n", 1.0 * PAGE_CNT * SECTOR_SIZE / 1e6 / TIME(t1, t2));
 	return 0;

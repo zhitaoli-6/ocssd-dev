@@ -1639,7 +1639,7 @@ static int group_l2p_rb_clean(struct pblk_md_line_group_set *set)
 	struct rb_root *root = &set->l2p_rb_root;
 	struct rb_node *node;
 	struct group_l2p_node **nodes = set->nodes_buffer;
-	int cur = 0, i = 0;
+	int cur = 0;
 
 	for (node = rb_first(root); node; node = rb_next(node)) {
 		if (cur >= set->nodes_buffer_size)
@@ -1651,8 +1651,10 @@ static int group_l2p_rb_clean(struct pblk_md_line_group_set *set)
 	if (cur != set->rb_size)
 		return 0;
 
+	/*
 	for (i = 0; i < cur; i++)
 		kfree(nodes[i]);
+		*/
 	return 1;
 }
 

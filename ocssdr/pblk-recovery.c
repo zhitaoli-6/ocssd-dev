@@ -197,8 +197,10 @@ static int pblk_recov_l2p_from_emeta(struct pblk *pblk, struct pblk_line *line)
 		}
 
 		pblk_update_map(pblk, le64_to_cpu(lba_list[i]), ppa);
+		/*
 		pr_info("pblk: %s: lba %llu in line %d of dev %d\n",
 				__func__, le64_to_cpu(lba_list[i]), line->id, dev_id);
+		*/
 		nr_lbas++;
 	}
 
