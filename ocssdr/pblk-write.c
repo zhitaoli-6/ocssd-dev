@@ -681,7 +681,6 @@ static void pblk_md_new_stripe(struct pblk *pblk, bool clear)
 		memset(set->parity, 0, PAGE_SIZE*pblk->min_write_pgs);
 		memset(set->lba_list, 0, sizeof(__le64)*pblk->min_write_pgs);
 	}
-
 	set->cpl = kzalloc(sizeof(struct pblk_md_cpl), GFP_KERNEL);
 
 	set->cpl->nr_io = set->line_groups[set->cur_group].nr_unit;
