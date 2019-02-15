@@ -59,6 +59,7 @@
 #define PBLK_DEFAULT_OP (21)
 
 #define DEFAULT_DEV_ID (0)
+#define ERR_DEV_ID (0)
 
 #define KMALLOC_PARITY
 #define ATOMIC_STRIPE
@@ -143,6 +144,13 @@ struct pblk_md_read_ctx {
 	struct bio *bio[NVM_MD_MAX_DEV_CNT];
 	struct ppa_addr ppa_list[PBLK_MAX_REQ_ADDRS];
 	unsigned long read_bitmap;
+	int nr_child_io;
+	atomic_t completion_cnt;
+};
+
+struct pblk_raid1_read_ctx {
+	struct nvm_rq *rqd;
+	struct bio *bio[NVM_MD_MAX_DEV_CNT];
 	int nr_child_io;
 	atomic_t completion_cnt;
 };

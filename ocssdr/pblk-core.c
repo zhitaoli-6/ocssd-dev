@@ -339,11 +339,20 @@ int pblk_bio_add_pages(struct pblk *pblk, struct bio *bio, gfp_t flags,
 {
 	struct request_queue *q = pblk->devs[dev_id]->q;
 	struct page *page;
+	void *data;
 	int i, ret;
 
 	for (i = 0; i < nr_pages; i++) {
 		page = mempool_alloc(pblk->page_bio_pool, flags);
-        if(page == NULL) printk("%s: page alloc null i=%d \n",__func__,i); //add by kan
+        //if(page == NULL) printk("%s: page alloc null i=%d \n",__func__,i); //add by kan
+		if (!page) {
+			pr_err("pblk: %s: alloc page from bio_pool fail\n", __func__);
+		}
+
+		data = kmap_atomic(page);
+		memset(data, 0, PBLK_EXPOSED_PAGE_SIZE);
+		kunmap_atomic(data);
+		
 		ret = bio_add_pc_page(q, bio, page, PBLK_EXPOSED_PAGE_SIZE, 0);
 		if (ret != PBLK_EXPOSED_PAGE_SIZE) {
 			pr_err("pblk: could not add page to bio\n");
@@ -507,7 +516,7 @@ void pblk_set_sec_per_write(struct pblk *pblk, int sec_per_write)
 int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd, int dev_id)
 {
 	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
-	if(!rqd->dev){
+	if (!rqd->dev) {
 		pr_info("pblk W: %s rqd with dev not defined\n", __func__);
 		rqd->dev = dev;
 	}

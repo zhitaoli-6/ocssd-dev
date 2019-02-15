@@ -25,9 +25,8 @@
 
 #define O_RAND (1)
 
-#define PAGE_CNT (32)
-//#define PAGE_CNT (1ll*SECTOR_SIZE*1024)
-    
+#define PAGE_CNT (1ll*1024)
+
 void rand_data(char *buf, int size)
 {
 	for(int i = 0; i < size; i++)

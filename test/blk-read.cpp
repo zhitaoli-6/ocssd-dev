@@ -74,8 +74,8 @@ int main()
 {
 	struct timeval t1, t2;
 	gettimeofday(&t1, NULL);
-	//check_filled_data();
-	check_injected_data();
+	check_filled_data();
+	//check_injected_data();
 	gettimeofday(&t2, NULL);
 	printf("bench: BW %.2fMB/s\n", 1.0 * PAGE_CNT * SECTOR_SIZE / 1e6 / TIME(t1, t2));
 	return 0;
