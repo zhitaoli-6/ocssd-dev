@@ -688,6 +688,7 @@ static void pblk_md_new_stripe(struct pblk *pblk, bool clear)
 	bitmap_zero(&set->cpl->cpl_map, set->cpl->nr_io);
 	spin_lock_init(&set->cpl->lock);
 	
+	//pblk->sche_meta.stripe_id = 0;
 	pblk->sche_meta.stripe_id = (pblk->sche_meta.stripe_id + 1) % set->cpl->nr_io;
 	pblk->sche_meta.unit_id = 0;
 }

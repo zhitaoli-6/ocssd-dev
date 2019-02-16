@@ -149,8 +149,8 @@ struct pblk_md_read_ctx {
 };
 
 struct pblk_raid1_read_ctx {
-	struct nvm_rq *rqd;
-	struct bio *bio[NVM_MD_MAX_DEV_CNT];
+	struct nvm_rq *rqd; // err rqd
+	struct bio *bio; // child bio
 	int nr_child_io;
 	atomic_t completion_cnt;
 };

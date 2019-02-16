@@ -29,7 +29,7 @@ static void check_filled_data(){
 	if (!O_RAND)
 		rand_data(_w_buf, SECTOR_SIZE);
 
-	for(int page = 0; page < PAGE_CNT; page++){
+	for(int page = 0; page < R_PAGE_CNT; page++){
 		int sector = page;
 		if (O_RAND)
 			rand_data(_w_buf, SECTOR_SIZE);
@@ -77,6 +77,6 @@ int main()
 	check_filled_data();
 	//check_injected_data();
 	gettimeofday(&t2, NULL);
-	printf("bench: BW %.2fMB/s\n", 1.0 * PAGE_CNT * SECTOR_SIZE / 1e6 / TIME(t1, t2));
+	printf("bench: BW %.2fMB/s\n", 1.0 * R_PAGE_CNT * SECTOR_SIZE / 1e6 / TIME(t1, t2));
 	return 0;
 }

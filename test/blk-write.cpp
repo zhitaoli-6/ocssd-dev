@@ -26,7 +26,7 @@ static void fill_data(){
 	char *_w_buf = new char[SECTOR_SIZE];
 	if (!O_RAND)
 		rand_data(_w_buf, SECTOR_SIZE);
-	int page_cnt = PAGE_CNT;
+	int page_cnt = W_PAGE_CNT;
 
 	for (int page = 0; page < page_cnt; page++)
 	{
@@ -84,6 +84,6 @@ int main()
 	fill_data();
 	//inject_same_ppa();
 	gettimeofday(&t2, NULL);
-	printf("bench: BW %.2fMB/s\n", 1.0 * PAGE_CNT * SECTOR_SIZE / 1e6 / TIME(t1, t2));
+	printf("bench: BW %.2fMB/s\n", 1.0 * W_PAGE_CNT * SECTOR_SIZE / 1e6 / TIME(t1, t2));
 	return 0;
 }

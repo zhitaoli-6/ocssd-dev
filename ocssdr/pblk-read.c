@@ -139,8 +139,8 @@ static int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd, int dev_id
 	int err;
 
 	// disable read from some device
-	if (dev_id == ERR_DEV_ID) {
-		atomic_inc(&pblk->inflight_io);
+	if (pblk_is_raid1or5(pblk) && dev_id == ERR_DEV_ID) {
+		//atomic_inc(&pblk->inflight_io);
 		return NVM_IO_ERR;
 	}
 	
@@ -397,13 +397,20 @@ static void pblk_end_io_read_child(struct nvm_rq *child_rqd)
 	atomic_dec(&pblk->inflight_io);
 }
 
-static void __pblk_end_io_read_raid1_rec(struct pblk, struct pblk_raid1_read_ctx *r1_r_ctx)
+static void __pblk_end_io_read_raid1_rec(struct pblk *pblk, struct pblk_raid1_read_ctx *r1_r_ctx)
 {
-	struct ppa_addr ppa;
-	int i, dev_id;
+	struct nvm_rq *err_rqd;
+	struct bio *err_bio, *bio;
+	struct pblk_g_ctx *r_ctx;
+
 	struct bio_vec src_bv, dst_bv;
 	void *src_p, *dst_p;
+	int i;
 	int done = atomic_inc_return(&r1_r_ctx->completion_cnt);
+
+	pr_info("pblk: %s: done/total %d/%d\n", __func__,
+			done, r1_r_ctx->nr_child_io);
+
 	if (done == r1_r_ctx->nr_child_io) {
 		// now user read io complete
 		bio = r1_r_ctx->bio;
@@ -429,12 +436,13 @@ static void __pblk_end_io_read_raid1_rec(struct pblk, struct pblk_raid1_read_ctx
 			kunmap_atomic(src_p);
 			kunmap_atomic(dst_p);
 		}
+
 		pblk_bio_free_pages(pblk, bio, 0, bio->bi_vcnt);
 		bio_put(bio);
 
 #ifdef CONFIG_NVM_DEBUG
-		atomic_long_add(md_rqd->nr_ppas, &pblk->sync_reads);
-		atomic_long_sub(md_rqd->nr_ppas, &pblk->inflight_reads);
+		atomic_long_add(err_rqd->nr_ppas, &pblk->sync_reads);
+		atomic_long_sub(err_rqd->nr_ppas, &pblk->inflight_reads);
 #endif
 		r_ctx = nvm_rq_to_pdu(err_rqd);
 		__pblk_end_io_read_md(pblk, (struct pblk_md_read_ctx *)r_ctx->private);
@@ -447,9 +455,8 @@ static void __pblk_end_io_read_raid1_rec(struct pblk, struct pblk_raid1_read_ctx
 static void pblk_end_io_read_group_raid1(struct nvm_rq *rqd)
 {
 	struct pblk *pblk = rqd->private;
-	struct nvm_tgt_dev *dev = rqd->dev;
-	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *bio = rqd->bio;
+	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	if (rqd->error) {
 		pblk_log_read_err(pblk, rqd);
 		// device read error handling: left to future work
@@ -459,7 +466,7 @@ static void pblk_end_io_read_group_raid1(struct nvm_rq *rqd)
 		WARN_ONCE(bio->bi_status, "pblk: corrupted read error\n");
 #endif
 
-	__pblk_end_io_read_raid1_rec(pblk, (struct pblk_raid1_read_ctx *)r_ctx->priavte);
+	__pblk_end_io_read_raid1_rec(pblk, (struct pblk_raid1_read_ctx *)r_ctx->private);
 
 	pblk_free_rqd(pblk, rqd, PBLK_READ);
 	atomic_dec(&pblk->inflight_io);
@@ -680,7 +687,8 @@ static int pblk_get_ppa_backup_raid1(struct pblk *pblk,
 	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
 	struct pblk_md_line_group *group;
 	int gid;
-	int err_line_id =  err_ppa.m.chk, line_id;
+	int err_line_id =  err_ppa.m.chk;
+	int line_id;
 	for (gid = set->cur_group; gid >= 0; gid--) {
 		group = &set->line_groups[gid];
 		if (err_dev_id <  group->nr_unit && group->line_units[err_dev_id].line_id == err_line_id) {
@@ -697,25 +705,34 @@ static int pblk_get_ppa_backup_raid1(struct pblk *pblk,
 
 static int pblk_group_read_raid1(struct pblk *pblk, struct nvm_rq *err_rqd)
 {
+	struct nvm_rq *rqd;
+	struct bio *bio;
 	struct ppa_addr err_ppa, ppa;
 	struct pblk_g_ctx *r_ctx;
 	struct pblk_raid1_read_ctx *r1_r_ctx;
-	int dev_id;
-	int err_dev_id = pblk_get_rq_dev_id(pblk, err_rqd);
-	if (dev_id != ERR_DEV_ID) {
-		pr_err("pblk: %s: unexpected read submission error\n", __func__);
-		return -1;
+	int i;
+	int dev_id, err_dev_id;
+	int ret = NVM_IO_ERR;
+
+	err_dev_id = pblk_get_rq_dev_id(pblk, err_rqd);
+	if (err_dev_id != ERR_DEV_ID) {
+		pr_err("pblk: %s: unexpected err_dev_id %d\n",
+				__func__, err_dev_id);
+		return ret;
 	}
+
 	dev_id = (err_dev_id + 1) % pblk->nr_dev;
+	pr_info("pblk: %s: now we try read from dev %d for failed read rqd dev %d\n",
+			__func__, dev_id,  err_dev_id);
 
 	r1_r_ctx = kzalloc(sizeof(struct pblk_raid1_read_ctx), GFP_KERNEL);
 	if (!r1_r_ctx) {
 		pr_err("pblk: %s: can not alloc raid1_read_ctx\n", __func__);
 		return NVM_IO_ERR;
 	}
-	r1_r_ctx->rqd= err_rqd;
+	r1_r_ctx->rqd = err_rqd;
 	r1_r_ctx->nr_child_io = 1;
-	atomic_set(&md_r_ctx->completion_cnt, 0);
+	atomic_set(&r1_r_ctx->completion_cnt, 0);
 
 	rqd = pblk_alloc_rqd(pblk, PBLK_READ);
 
@@ -730,10 +747,16 @@ static int pblk_group_read_raid1(struct pblk *pblk, struct nvm_rq *err_rqd)
 	r_ctx->private = r1_r_ctx;
 
 	bio = bio_alloc(GFP_KERNEL, rqd->nr_ppas);
+	if (!bio) {
+		pr_err("pblk: %s: can not alloc bio\n", __func__);
+		return NVM_IO_ERR;
+	}
 	if (pblk_bio_add_pages(pblk, bio, GFP_KERNEL, rqd->nr_ppas, dev_id))
 		goto prepare_err;
 	bio->bi_iter.bi_sector = 0;
 	bio_set_op_attrs(bio, REQ_OP_READ, 0);
+
+	r1_r_ctx->bio = bio;
 
 	rqd->bio = bio;
 	rqd->meta_list = nvm_dev_dma_alloc(rqd->dev->parent, GFP_KERNEL,
@@ -743,8 +766,12 @@ static int pblk_group_read_raid1(struct pblk *pblk, struct nvm_rq *err_rqd)
 		goto prepare_err;
 	}
 
+	//pr_info("pblk: %s: nr_ppas %d\n", __func__, rqd->nr_ppas);
 	if (rqd->nr_ppas > 1) {
 		for (i = 0; i < rqd->nr_ppas; i++) {
+			rqd->ppa_list = rqd->meta_list + pblk_dma_meta_size;
+			rqd->dma_ppa_list = rqd->dma_meta_list + pblk_dma_meta_size;
+
 			err_ppa = err_rqd->ppa_list[i];
 			ret = pblk_get_ppa_backup_raid1(pblk, err_dev_id, err_ppa, dev_id, &ppa);
 			if (ret) {
@@ -752,6 +779,14 @@ static int pblk_group_read_raid1(struct pblk *pblk, struct nvm_rq *err_rqd)
 				goto prepare_err;
 			}
 			rqd->ppa_list[i] = ppa;
+			/*
+			pr_info("pblk: %s: (dev %u grp %u pu %u chk %u sec %u)\n", 
+					__func__, err_dev_id, err_ppa.m.grp, 
+					err_ppa.m.pu, err_ppa.m.chk, err_ppa.m.sec);
+			pr_info("pblk: %s: (dev %u grp %u pu %u chk %u sec %u)\n", 
+					__func__, dev_id, ppa.m.grp, 
+					ppa.m.pu, ppa.m.chk, ppa.m.sec);
+					*/
 		}
 	} else {
 		err_ppa = err_rqd->ppa_addr;
@@ -760,7 +795,15 @@ static int pblk_group_read_raid1(struct pblk *pblk, struct nvm_rq *err_rqd)
 			pr_err("pblk: %s: can get ppa from raid1\n", __func__);
 			goto prepare_err;
 		}
-		rqd->ppa_buf = ppa;
+		rqd->ppa_addr = ppa;
+		/*
+		pr_info("pblk: %s: (dev %u grp %u pu %u chk %u sec %u)\n", 
+				__func__, err_dev_id, err_ppa.m.grp, 
+				err_ppa.m.pu, err_ppa.m.chk, err_ppa.m.sec);
+		pr_info("pblk: %s: (dev %u grp %u pu %u chk %u sec %u)\n", 
+				__func__, dev_id, ppa.m.grp, 
+				ppa.m.pu, ppa.m.chk, ppa.m.sec);
+				*/
 	}
 	ret = pblk_submit_read_io(pblk, rqd, dev_id);
 	if (ret) {
@@ -774,9 +817,10 @@ submission_err:
 	pr_err("pblk: %s todo work: failed IO\n", __func__);
 	atomic_dec(&pblk->inflight_io);
 prepare_err:
-	pblk_bio_free_pages(pblk, bio, 0, nr_child_secs);
+	pblk_bio_free_pages(pblk, bio, 0, err_rqd->nr_ppas);
 	bio_put(bio);
 	pblk_free_rqd(pblk, rqd, PBLK_READ);
+	kfree(r1_r_ctx);
 	return NVM_IO_ERR;
 }
 
@@ -786,9 +830,9 @@ static int pblk_submit_group_read(struct pblk *pblk, struct nvm_rq *rqd, int dev
 	int i;
 	struct ppa_addr ppa;
 	if (pblk_is_raid5(pblk)) {
-		
+		return NVM_IO_ERR;
 	} else if (pblk_is_raid1(pblk)){
-		return pblk_group_read_raid1(pblk, rqd, dev_id);
+		return pblk_group_read_raid1(pblk, rqd);
 	}
 	return NVM_IO_ERR;
 }
@@ -810,7 +854,7 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 	int dev_id, i;
 	int ret = NVM_IO_ERR;
 
-	//pr_info("pblk: %s nr_holes %d, nr_secs %d\n", __func__, nr_holes, nr_secs);
+	pr_info("pblk: %s nr_holes %d, nr_secs %d\n", __func__, nr_holes, nr_secs);
 
 	// fill md_r_ctx
 	for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
@@ -913,13 +957,18 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 		ret = pblk_submit_read_io(pblk, rqd, dev_id);
 		if (ret) {
 			// submission error handling: injected device error here
-			pr_err("pblk: md read IO submission to dev %d failed: injected\n", dev_id);
+			pr_err("pblk: md read IO submission to dev %d failed\n", dev_id);
 			if (pblk_is_raid1or5(pblk)) {
 				if (dev_id != ERR_DEV_ID) {
 					pr_err("pblk: %s: unexpected submission error to dev %d\n",
 							__func__, dev_id);
-				} else 
+				} else  {
+					pr_info("pblk: %s: expected submission error to dev %d\n",
+							__func__, dev_id);
 					ret = pblk_submit_group_read(pblk, rqd, dev_id);
+					if (ret)
+						atomic_inc(&pblk->inflight_io);
+				}
 			}
 			if (ret)
 				goto fail_submission;
@@ -984,7 +1033,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	unsigned long read_bitmap; /* Max 64 ppas per request */
 	int ret = NVM_IO_ERR;
 
-	//pr_info("pblk: %s blba %lu, nr_secs %u\n", __func__, blba, nr_secs);
+	pr_info("pblk: %s blba %lu, nr_secs %u\n", __func__, blba, nr_secs);
 
 	/* logic error: lba out-of-bounds. Ignore read request */
 	if (blba >= pblk->rl.nr_secs || nr_secs > PBLK_MAX_REQ_ADDRS) {
@@ -1024,8 +1073,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		rqd->ppa_list = md_r_ctx->ppa_list;
 	} else {
 		rqd->ppa_addr = md_r_ctx->ppa_list[0];
-	}
-	md_r_ctx->read_bitmap = read_bitmap;
+	} md_r_ctx->read_bitmap = read_bitmap;
 
 	bio_get(bio);
 	if (bitmap_full(&read_bitmap, nr_secs)) {
@@ -1203,8 +1251,6 @@ int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq)
 							gc_rq->lba_list[0],
 							gc_rq->paddr_list[0]);
 	}
-
-
 
 	if (!(gc_rq->secs_to_gc))
 		goto out;
