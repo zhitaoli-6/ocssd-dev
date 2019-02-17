@@ -155,6 +155,14 @@ struct pblk_raid1_read_ctx {
 	atomic_t completion_cnt;
 };
 
+struct pblk_raid5_read_ctx {
+	struct nvm_rq *rqd; // err rqd
+	struct bio *bio[NVM_MD_MAX_DEV_CNT];
+	int nr_child_io;
+	atomic_t completion_cnt;
+};
+
+
 /* read context */
 struct pblk_g_ctx {
 	void *private;
@@ -1648,6 +1656,7 @@ static int group_l2p_rb_clean(struct pblk_md_line_group_set *set)
 	struct rb_node *node;
 	struct group_l2p_node **nodes = set->nodes_buffer;
 	int cur = 0;
+	int i;
 
 	for (node = rb_first(root); node; node = rb_next(node)) {
 		if (cur >= set->nodes_buffer_size)
@@ -1659,10 +1668,8 @@ static int group_l2p_rb_clean(struct pblk_md_line_group_set *set)
 	if (cur != set->rb_size)
 		return 0;
 
-	/*
 	for (i = 0; i < cur; i++)
 		kfree(nodes[i]);
-		*/
 	return 1;
 }
 

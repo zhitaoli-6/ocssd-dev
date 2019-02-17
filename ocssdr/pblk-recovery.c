@@ -1257,6 +1257,7 @@ int pblk_recov_emeta_dev(struct pblk *pblk, struct pblk_line *line, struct pblk_
 	
 }
 
+// todo: line_groups recovery
 struct pblk_line *pblk_recov_l2p_raid0(struct pblk *pblk)
 {
 	struct pblk_line *line[NVM_MD_MAX_DEV_CNT];
