@@ -140,7 +140,6 @@ static int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd, int dev_id
 
 	// disable read from some device
 	if (pblk_is_raid1or5(pblk) && dev_id == ERR_DEV_ID) {
-		//atomic_inc(&pblk->inflight_io);
 		return NVM_IO_ERR;
 	}
 	
@@ -408,8 +407,10 @@ static void __pblk_end_io_read_raid1_rec(struct pblk *pblk, struct pblk_raid1_re
 	int i;
 	int done = atomic_inc_return(&r1_r_ctx->completion_cnt);
 
+	/*
 	pr_info("pblk: %s: done/total %d/%d\n", __func__,
 			done, r1_r_ctx->nr_child_io);
+			*/
 
 	if (done == r1_r_ctx->nr_child_io) {
 		// now user read io complete
@@ -722,8 +723,10 @@ static int pblk_group_read_raid1(struct pblk *pblk, struct nvm_rq *err_rqd)
 	}
 
 	dev_id = (err_dev_id + 1) % pblk->nr_dev;
+	/*
 	pr_info("pblk: %s: now we try read from dev %d for failed read rqd dev %d\n",
 			__func__, dev_id,  err_dev_id);
+			*/
 
 	r1_r_ctx = kzalloc(sizeof(struct pblk_raid1_read_ctx), GFP_KERNEL);
 	if (!r1_r_ctx) {
@@ -815,7 +818,6 @@ static int pblk_group_read_raid1(struct pblk *pblk, struct nvm_rq *err_rqd)
 	
 submission_err:
 	pr_err("pblk: %s todo work: failed IO\n", __func__);
-	atomic_dec(&pblk->inflight_io);
 prepare_err:
 	pblk_bio_free_pages(pblk, bio, 0, err_rqd->nr_ppas);
 	bio_put(bio);
@@ -854,7 +856,7 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 	int dev_id, i;
 	int ret = NVM_IO_ERR;
 
-	pr_info("pblk: %s nr_holes %d, nr_secs %d\n", __func__, nr_holes, nr_secs);
+	//pr_info("pblk: %s nr_holes %d, nr_secs %d\n", __func__, nr_holes, nr_secs);
 
 	// fill md_r_ctx
 	for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
@@ -957,17 +959,17 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 		ret = pblk_submit_read_io(pblk, rqd, dev_id);
 		if (ret) {
 			// submission error handling: injected device error here
-			pr_err("pblk: md read IO submission to dev %d failed\n", dev_id);
+			//pr_err("pblk: md read IO submission to dev %d failed\n", dev_id);
 			if (pblk_is_raid1or5(pblk)) {
 				if (dev_id != ERR_DEV_ID) {
 					pr_err("pblk: %s: unexpected submission error to dev %d\n",
 							__func__, dev_id);
 				} else  {
+					/*
 					pr_info("pblk: %s: expected submission error to dev %d\n",
 							__func__, dev_id);
+							*/
 					ret = pblk_submit_group_read(pblk, rqd, dev_id);
-					if (ret)
-						atomic_inc(&pblk->inflight_io);
 				}
 			}
 			if (ret)
@@ -990,7 +992,6 @@ fail_submission:
 	pr_err("pblk: %s todo work: failed IO\n", __func__);
 	bio_put(bio);
 	pblk_free_rqd(pblk, rqd, PBLK_READ);
-	atomic_dec(&pblk->inflight_io);
 
 	bio_put(md_rqd->bio);
 	pblk_free_rqd(pblk, md_rqd, PBLK_READ);
@@ -1033,7 +1034,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	unsigned long read_bitmap; /* Max 64 ppas per request */
 	int ret = NVM_IO_ERR;
 
-	pr_info("pblk: %s blba %lu, nr_secs %u\n", __func__, blba, nr_secs);
+	//pr_info("pblk: %s blba %lu, nr_secs %u\n", __func__, blba, nr_secs);
 
 	/* logic error: lba out-of-bounds. Ignore read request */
 	if (blba >= pblk->rl.nr_secs || nr_secs > PBLK_MAX_REQ_ADDRS) {
