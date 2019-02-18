@@ -140,7 +140,7 @@ static int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd, int dev_id
 
 	// disable read from some device
 	if (pblk_is_raid1or5(pblk) && dev_id == ERR_DEV_ID) {
-		return NVM_IO_ERR;
+		//return NVM_IO_ERR;
 	}
 	
 	err = pblk_submit_io(pblk, rqd, dev_id);
