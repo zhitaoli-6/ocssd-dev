@@ -112,13 +112,14 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 {
 	struct pblk_line *line = NULL;
 	int dev_id;
+	int gid = 0; // group_id
 
 	if (factory_init) {
 		pblk_setup_uuid(pblk);
 	} else {
 		pr_err("pblk: %s: begin recover l2p\n", __func__);
-		line = pblk_recov_l2p(pblk);
-		if (!line) {
+		gid = pblk_recov_l2p(pblk);
+		if (gid >= 0) {
 			pr_info("pblk: %s recov line ret NULL, expected\n", __func__);
 		}
 		else {
@@ -135,9 +136,11 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 	/* Free full lines directly as GC has not been started yet */
 	pblk_gc_free_full_lines(pblk);
 
-	if (!line) {
+	if (gid >= 0) {
+		// todo: group->nr_unit according to given argu
 		/* Configure next line for user data */
 		struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
+		set->cur_group = gid;
 		struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
 		group->nr_unit = pblk->nr_dev;
 		// first md line stripe

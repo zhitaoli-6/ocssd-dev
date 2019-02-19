@@ -6,5 +6,8 @@
 2. Not ok to recover from partially-written lines: Abort the recovery process
 
 ## Multiple devices
+Red-Black tree is used to improve performance of reset dup-p2l
 
-It is hard to make the order of same ppa clear in the same stripe made up of multiple lines.
+## Assumptions
+1. stripe size equals to #devs. TODO: get rid of this constraint
+
