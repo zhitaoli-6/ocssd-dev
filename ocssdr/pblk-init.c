@@ -1389,7 +1389,7 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 
 	pblk->devs = devs;
 	pblk->nr_dev = nr_dev;
-	pblk->md_mode = PBLK_RAID5;
+	pblk->md_mode = PBLK_RAID0;
 
 	pblk->disk = tdisk;
 	pblk->state = PBLK_STATE_RUNNING;

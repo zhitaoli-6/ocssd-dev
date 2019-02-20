@@ -2129,8 +2129,8 @@ void pblk_update_map_dev(struct pblk *pblk, sector_t lba,
 	WARN_ON(!pblk_addr_in_cache(ppa_l2p) && !pblk_ppa_empty(ppa_l2p));
 #endif
 	if(lba < 32) {
-		pr_info("pblk: %s, lba %lu ppa %llu(dev %u grp %u pu %u chk %u sec %u)\n", 
-				__func__, lba, ppa_mapped.ppa, ppa_mapped.c.dev_id, ppa_mapped.m.grp, 
+		pr_info("pblk: %s, lba %lu ppa (dev %u grp %u pu %u chk %u sec %u)\n",
+				__func__, lba, ppa_mapped.c.dev_id, ppa_mapped.m.grp,
 				ppa_mapped.m.pu, ppa_mapped.m.chk, ppa_mapped.m.sec);
 	}
 

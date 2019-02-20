@@ -63,6 +63,9 @@
 
 #define KMALLOC_PARITY
 #define ATOMIC_STRIPE
+
+//#define P2L_CLEAN
+//
 //#define META_READ
 
 enum {
