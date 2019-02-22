@@ -49,7 +49,7 @@ static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	struct ppa_addr ppas[PBLK_MAX_REQ_ADDRS];
 	int nr_secs = rqd->nr_ppas;
 	bool advanced_bio = false;
-	int i, j = 0;
+	int i;
     struct nvm_tgt_dev *dev = pblk->devs[DEFAULT_DEV_ID]; //add by kan
     struct nvm_geo *geo = &dev->geo; //add by kan
     int meta_list_idx; //add by kan
@@ -111,7 +111,11 @@ retry:
 #endif
 		} else {
 			/* Read from media non-cached sectors */
-			ppa_list[j++] = p;
+			if (!p.ppa) {
+				pr_err("pblk: %s: %d/%d ppa is 0\n", __func__, i, nr_secs);
+			}
+			ppa_list[i] = p;
+
 		}
 
 next:
@@ -1154,10 +1158,10 @@ static int pblk_submit_read_bio_md_async(struct pblk *pblk, struct nvm_rq *md_rq
 
 			for (i = 0; i < nr_child_secs; i++) {
 				rqd->ppa_list[i] = ppa_buf[i];
-				/*
-				pr_info("pblk: child_io %d, ppa_list[%d] %llu\n",
-						dev_id, i, ppa_buf[i].ppa);
-				*/
+				if (!ppa_buf[i].ppa) {
+					pr_err("pblk: child_io %d, ppa_list[%d] %llu\n",
+							dev_id, i, ppa_buf[i].ppa);
+				}
 			}
 		} else {
 			rqd->ppa_addr = ppa_buf[0];
@@ -1291,7 +1295,8 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		rqd->ppa_list = md_r_ctx->ppa_list;
 	} else {
 		rqd->ppa_addr = md_r_ctx->ppa_list[0];
-	} md_r_ctx->read_bitmap = read_bitmap;
+	}
+	md_r_ctx->read_bitmap = read_bitmap;
 
 	bio_get(bio);
 	if (bitmap_full(&read_bitmap, nr_secs)) {

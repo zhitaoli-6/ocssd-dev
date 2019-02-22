@@ -1,1 +1,8 @@
-nvme lnvm remove -n pblk_sd
+#!/bin/bash
+#echo nvme lnvm remove -n pblk_sd$1
+#nvme lnvm remove -n pblk_sd$1
+for id in `seq 1 4`
+do
+	nvme lnvm remove -n pblk_sd$id
+done
+
