@@ -69,6 +69,11 @@
 //#define META_READ
 
 enum {
+	// NVM_TARGET_FACTORY = 1 << 0, in file "uapi/linux/lightnvm.h"
+	PBLK_TARGET_RESIZE = 1 << 1,
+};
+
+enum {
 	PBLK_READ		= READ,
 	PBLK_WRITE		= WRITE,/* Write from write buffer */
 	PBLK_WRITE_INT,			/* Internal write - no write buffer */
@@ -711,6 +716,8 @@ enum {
 struct pblk {
 	struct nvm_tgt_dev **devs;
 	int nr_dev;
+	int on_resize;
+
 	struct gendisk *disk;
 
 	struct kobject kobj;
