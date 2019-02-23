@@ -16,74 +16,17 @@
  *
  */
 
-#include "pblk.h"
+#include "pblk-map.h"
 
-// RB tree func cores
-static struct group_l2p_node *group_l2p_rb_search(struct rb_root *root, u64 lba)
-{
-	struct rb_node *node = root->rb_node;
-	struct group_l2p_node *l2p_data;
-	while (node) {
-		l2p_data = container_of(node, struct group_l2p_node, node);
-		if (lba > l2p_data->lba) 
-			node = node->rb_right;
-		else if (lba < l2p_data->lba)
-			node = node->rb_left;
-		else
-			return l2p_data;
-	}
-	return NULL;
-}
-
-static int group_l2p_rb_insert(struct rb_root *root, struct group_l2p_node *data) 
-{
-	struct rb_node **new = &(root->rb_node), *parent = NULL;
-	struct group_l2p_node *this;
-	while (*new) {
-		this = container_of(*new, struct group_l2p_node, node);
-		parent = *new;
-		if (data->lba < this->lba)
-			new = &((*new)->rb_left);
-		else if(data->lba > this->lba)
-			new = &((*new)->rb_right);
-		else
-			return 0; // fail: exists
-	}
-
-	rb_link_node(&data->node, parent, new);
-	rb_insert_color(&data->node, root);
-	return 1;
-}
-
-static int group_l2p_rb_clean(struct pblk_md_line_group_set *set)
-{
-	struct rb_root *root = &set->l2p_rb_root;
-	struct rb_node *node;
-	struct group_l2p_node **nodes = set->nodes_buffer;
-	int cur = 0;
-	int i;
-
-	for (node = rb_first(root); node; node = rb_next(node)) {
-		if (cur >= set->nodes_buffer_size)
-			return 0;
-		nodes[cur] = container_of(node, struct group_l2p_node, node);
-		cur ++;
-	}
-
-	if (cur != set->rb_size)
-		return 0;
-
-	for (i = 0; i < cur; i++)
-		kfree(nodes[i]);
-	return 1;
-}
 static void pblk_md_new_group(struct pblk *pblk)
 {
 	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
 	struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
 	struct pblk_line *line, *prev_line;
 	int nr_unit = group->nr_unit;
+	int dev_buf[NVM_MD_MAX_DEV_CNT];
 	int i, dev_id;
+	int ret;
 
 	// check lines become full at the same time
 	for (i = 0;  i < nr_unit; i++) {
@@ -95,30 +38,36 @@ static void pblk_md_new_group(struct pblk *pblk)
 					i, dev_id);
 		}
 	}
-
-	// close old group: clean l2p_rb_tree
-	if (!group_l2p_rb_clean(set)) {
-		pr_err("pblk: %s: l2p_rb tree clean fails\n",
-				__func__);
-	}
-	set->l2p_rb_root = RB_ROOT;
-	set->rb_size = 0;
-
-	set->cur_group++;
-	group = &set->line_groups[set->cur_group];
-	// open new group. naive strategy used here
-	for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
+	// replace old line group
+	for (i = 0; i < nr_unit; i++) {
+		dev_id = group->line_units[i].dev_id;
 		prev_line  = pblk_line_get_data(pblk, dev_id);
 		line = pblk_line_replace_data(pblk, dev_id);
 		pblk_line_close_meta(pblk, prev_line);
+	}
 
-		group->nr_unit = nr_unit;
-		group->line_units[dev_id].dev_id = dev_id;
-		group->line_units[dev_id].line_id = line->id;
+	// open new group
+	set->cur_group++;
+	group = &set->line_groups[set->cur_group];
+	ret = pblk_schedule_line_group(pblk, dev_buf, group->nr_unit);
+	if (ret < 0) {
+		pr_err("pblk: %s: fail schedule new line_group\n", __func__);
+		for (i = 0; i < nr_unit; i++)
+			dev_buf[i] = i;
+	}
+	group->nr_unit = nr_unit;
+	for (i = 0; i < nr_unit; i++) {
+		dev_id = dev_buf[i];
+		line = pblk_line_get_data(pblk, dev_id);
+		group->line_units[i].dev_id = dev_id;
+		group->line_units[i].line_id = line->id;
+		pr_info("pblk: %s: new md line_group %d dev %d line %d seq_nr %d\n",
+				__func__, set->cur_group, dev_id, line->id, line->seq_nr);
 	}
 	
 	// update line emeta md info
-	for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
+	for (i = 0; i < group->nr_unit; i++) {
+		dev_id = dev_buf[i];
 		line = pblk_line_get_data(pblk, dev_id);
 		pblk_line_setup_emeta_md(pblk, line);
 	}
@@ -384,7 +333,7 @@ static void pblk_map_prepare_rqd_raid0(struct pblk *pblk, struct pblk_line *line
 	lba_list[paddr] = cpu_to_le64(w_ctx->lba);
 	if (lba_list[paddr] != addr_empty) {
 #ifdef P2L_CLEAN
-		pblk_clean_group_lba_raid0(pblk, dev_id, paddr, w_ctx->lba);
+		//pblk_clean_group_lba_raid0(pblk, dev_id, paddr, w_ctx->lba);
 #endif
 		line->nr_valid_lbas++;
 	}
@@ -436,7 +385,7 @@ static void pblk_map_prepare_rqd_raid5(struct pblk *pblk, struct pblk_line *line
 
 	if (!pblk_id_is_parity(pblk, c_ctx->md_id)) {
 #ifdef P2L_CLEAN
-		pblk_clean_group_lba_raid5(pblk, dev_id, paddr, lba);
+		//pblk_clean_group_lba_raid5(pblk, dev_id, paddr, lba);
 #endif
 		if (lba_list[paddr] != addr_empty) {
 			line->nr_valid_lbas++;

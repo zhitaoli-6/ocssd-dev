@@ -733,6 +733,7 @@ struct pblk {
 	struct pblk_schedule_meta sche_meta; /* Scheduler infomation */
 	struct pblk_md_line_group_set md_line_group_set;
 	int md_mode;
+	int stripe_size; // nr_dev in a stripe
 
 	struct nvm_addrf addrf;		/* Aligned address format */
 	struct pblk_addrf uaddrf;	/* Unaligned address format */
@@ -1063,6 +1064,29 @@ static inline void pblk_mfree(void *ptr, int type)
 		vfree(ptr);
 }
 
+static inline int pblk_schedule_line_group(struct pblk *pblk, int *dev_buf, int nr)
+{
+	int map[NVM_MD_MAX_DEV_CNT];
+	int max, i;
+	int dev, d;
+	memset(map, 0, sizeof(map));
+	for (i = 0; i < nr; i++) {
+		max = 0;
+		dev = -1;
+		for (d = 0; d < pblk->nr_dev; d++) {
+			if (!map[d] && pblk->l_mg[d].nr_free_lines > max) {
+				max = pblk->l_mg[d].nr_free_lines;
+				dev = d;
+			}
+		}
+		if (dev == -1)
+			return -1;
+		dev_buf[i] = dev;
+		map[dev] = 1;
+	}
+	return 0;
+}
+
 static inline bool pblk_is_sd(struct pblk *pblk)
 {
 	return pblk->md_mode == PBLK_SD;
@@ -1085,7 +1109,7 @@ static inline bool pblk_is_raid1or5(struct pblk *pblk)
 
 static inline bool pblk_id_is_parity(struct pblk *pblk, int md_id) 
 {
-	return md_id == pblk->nr_dev - 1;
+	return md_id == pblk->stripe_size - 1;
 }
 
 static inline struct nvm_rq *nvm_rq_from_c_ctx(void *c_ctx)

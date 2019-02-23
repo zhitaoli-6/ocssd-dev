@@ -1224,6 +1224,11 @@ static int __nvm_configure_create(struct nvm_ioctl_create *create)
 	int pre_len = strlen(prefix);
 
 	/* create->devname will be changed by parse algorithm */
+	len = strlen(create->dev);
+	if (create->dev[len-1] == ',') {
+		// the last device given is to resize
+		create->flags |= (1<<1);
+	}
 	nr_dev = get_delimiter_cnt(create->dev, ',') + 1;
 	if (nr_dev > NVM_MD_MAX_DEV_CNT)
 		nr_dev = NVM_MD_MAX_DEV_CNT;

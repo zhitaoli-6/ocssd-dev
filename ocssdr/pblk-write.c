@@ -640,7 +640,7 @@ static int pblk_stripe_size(struct pblk *pblk)
 			stripe_size  = 1;
 			break;
 		case PBLK_RAID5:
-			stripe_size  = pblk->nr_dev - 1;
+			stripe_size  = pblk->stripe_size - 1;
 			break;
 		default:
 			pr_err("pblk: schedule_write unexpected pblk md_mode\n");

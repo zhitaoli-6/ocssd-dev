@@ -1413,6 +1413,10 @@ int pblk_recov_emeta_dev_group(struct pblk *pblk, struct pblk_line **lines, stru
 
 	// check emeta consistency
 	emeta_buf = lines[0]->emeta->buf;
+	if (emeta_buf->nr_unit != rec_nr_line) {
+		pr_err("pblk: %s: inconsistent emeta nr_unit %d, rec_nr_line %d\n",
+				__func__, emeta_buf->nr_unit, rec_nr_line);
+	}
 	for (i = 1; i < rec_nr_line; i++) {
 		line = lines[i];
 		x = line->emeta->buf->nr_unit;
@@ -1749,22 +1753,24 @@ int pblk_recov_l2p_raid5(struct pblk *pblk)
 		for (i = 0; i < last_nr_dev; i++) {
 			if (&line[i]->list != &recov_list[i]) {
 				cur_seq_nr = line[i]->seq_nr;
+				break;
 			}
 		}
 		if (cur_seq_nr == last_seq_nr) {
 			pr_info("pblk: %s: recov %d line, ends\n",
 					__func__, recovered_lines);
 			goto out;
-		} else if (cur_seq_nr != last_seq_nr + 1) {
+		} 
+		for (i = 1; i < last_nr_dev; i++) {
+			if (&line[i]->list != &recov_list[i] && cur_seq_nr > line[i]->seq_nr)
+				cur_seq_nr = line[i]->seq_nr;
+		}
+		if (cur_seq_nr != last_seq_nr + 1) {
 			pr_err("pblk: %s: last_seq_nr %d, cur_seq_nr %d\n",
 					__func__, last_seq_nr, cur_seq_nr);
 			return -1;
 		}
 
-		for (i = 1; i < last_nr_dev; i++) {
-			if (&line[i]->list != &recov_list[i] && cur_seq_nr > line[i]->seq_nr)
-				cur_seq_nr = line[i]->seq_nr;
-		}
 		rec_nr_line = 0;
 		for (i = 0; i < last_nr_dev; i++) {
 			if (cur_seq_nr == line[i]->seq_nr) {
@@ -1773,11 +1779,18 @@ int pblk_recov_l2p_raid5(struct pblk *pblk)
 				rec_nr_line++;
 			}
 		}
+		if (!pblk->stripe_size) {
+			pblk->stripe_size = rec_nr_line;
+		} else if (pblk->stripe_size != rec_nr_line) {
+			pr_err("pblk: %s: inconsistent stripe_size %d with rec_nr_line %d",
+					__func__, pblk->stripe_size, rec_nr_line);
+			return -1;
+		}
 
 		recovered_lines++;
 		// next line rec
 		for (i = 0; i < last_nr_dev; i++) {
-			if (&line[i]->list != &recov_list[i])
+			if (&line[i]->list != &recov_list[i] && cur_seq_nr == line[i]->seq_nr)
 				tline[i] = list_next_entry(line[i], list);
 		}
 
@@ -1832,10 +1845,11 @@ out:
 	for (i = 0; i < last_nr_dev; i++) {
 		spin_lock(&l_mg[i]->free_lock);
 		WARN_ON_ONCE(!test_and_clear_bit(meta_line[i], &l_mg[i]->meta_bitmap)); 
-		pblk_line_replace_data(pblk, i);
+		//pblk_line_replace_data(pblk, i);
 		spin_unlock(&l_mg[i]->free_lock);
 	}
 	if (pblk->on_resize) {
+		// todo
 	}
 
 	pr_info("pblk: %s: recov raid5 succ\n", __func__);
@@ -1848,8 +1862,10 @@ int pblk_recov_l2p(struct pblk  *pblk)
 		case PBLK_SD:
 			return pblk_recov_l2p_sd(pblk);
 		case PBLK_RAID0:
+			pr_err("pblk: %s: md_mode %d not ok now\n", __func__, pblk->md_mode);
 			return pblk_recov_l2p_raid0(pblk);
 		case PBLK_RAID1:
+			pr_err("pblk: %s: md_mode %d not ok now\n", __func__, pblk->md_mode);
 			return pblk_recov_l2p_raid1(pblk);
 		case PBLK_RAID5:
 			return pblk_recov_l2p_raid5(pblk);
