@@ -1181,6 +1181,8 @@ void pblk_line_setup_emeta_md(struct pblk *pblk, struct pblk_line *line)
 	int i;
 
 	/* Fill Md info of emeta */
+	line->g_seq_nr = set->cur_group;
+	emeta_buf->g_seq_nr = cpu_to_le64(set->cur_group);
 	emeta_buf->md_mode = cpu_to_le32(pblk->md_mode);
 	emeta_buf->nr_unit = cpu_to_le32(group->nr_unit);
 	for (i = 0; i < group->nr_unit; i++) {
@@ -1601,8 +1603,9 @@ void pblk_pipeline_stop(struct pblk *pblk)
 		pr_info("pblk: pad writes of dev %d...\n", dev_id);
 		l_mg = &pblk->l_mg[dev_id];
 
-		pr_info("pblk: %s: leave dev %d line %d left_secs %d partial\n", 
-				__func__, dev_id, l_mg->data_line->id, l_mg->data_line->left_msecs);
+		pr_info("pblk: %s: leave dev %d line %d seq_nr %d g_seq_nr %d, left_secs %d partial\n", 
+				__func__, dev_id, l_mg->data_line->id, l_mg->data_line->seq_nr,
+				l_mg->data_line->g_seq_nr, l_mg->data_line->left_msecs);
 		//ret = 0;
 
 		ret = pblk_recov_pad(pblk, dev_id);

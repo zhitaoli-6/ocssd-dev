@@ -452,6 +452,7 @@ struct line_emeta {
 	__le64 seq_nr;		/* Sequence number for current line */
 
 	/* MD info */
+	__le64 g_seq_nr;
 	__le32 md_mode;
 	__le32 nr_unit;
 	struct pblk_md_line_unit_le line_units[NVM_MD_MAX_DEV_CNT];
@@ -497,6 +498,8 @@ struct pblk_line {
 					 */
 	int dev_id; /* Device id */
 	unsigned int seq_nr;		/* Unique line sequence number */
+	unsigned int g_seq_nr;		/* Unique line global md sequence number */
+	
 
 	int state;			/* PBLK_LINESTATE_X */
 	int type;			/* PBLK_LINETYPE_X */
@@ -707,7 +710,7 @@ struct pblk_md_line_group_set {
 };
 
 enum {
-	PBLK_SD = 0,
+	PBLK_SD = 8,
 	PBLK_RAID0 = 10,
 	PBLK_RAID1 = 11,
 	PBLK_RAID5 = 15,
@@ -1083,6 +1086,17 @@ static inline int pblk_schedule_line_group(struct pblk *pblk, int *dev_buf, int 
 			return -1;
 		dev_buf[i] = dev;
 		map[dev] = 1;
+	}
+	i = 0;
+	for (d = 0; d < pblk->nr_dev; d++) {
+		if (map[d]) {
+			dev_buf[i] = d;
+			i++;
+		}
+	}
+	for (i = 0; i < nr; i++) {
+		pr_info("pblk: %s: result %d/%d dev %d, free_lines %d\n",
+				__func__, i, nr, dev_buf[i], pblk->l_mg[dev_buf[i]].nr_free_lines);
 	}
 	return 0;
 }

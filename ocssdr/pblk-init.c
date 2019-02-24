@@ -170,8 +170,6 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 			line = pblk_line_get_data(pblk, dev_id);
 			group->line_units[i].dev_id = dev_id;
 			group->line_units[i].line_id = line->id;
-			pr_info("pblk: first stripe dev %d line %d seq_nr %d\n",
-					dev_id, line->id, line->seq_nr);
 		}
 
 		// line emeta
@@ -179,6 +177,8 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 			dev_id = dev_buf[i];
 			line = pblk_line_get_data(pblk, dev_id);
 			pblk_line_setup_emeta_md(pblk, line);
+			pr_info("pblk: first stripe dev %d line %d seq_nr %d,%d\n",
+					dev_id, line->id, line->seq_nr, line->g_seq_nr);
 		}
 
 		// cpl
@@ -1493,7 +1493,7 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	ret = pblk_md_init(pblk, flags);
 	if (ret) {
 		pr_err("pblk: could not initialize md info\n");
-		goto fail_free_rwb;
+		goto fail_free_l2p;
 	}
 	pr_info("pblk: done pblk_md_init\n");
 

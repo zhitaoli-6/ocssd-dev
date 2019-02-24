@@ -150,6 +150,7 @@ int pblk_recov_check_emeta(struct pblk *pblk, struct line_emeta *emeta_buf)
 
 	if (!pblk_is_sd(pblk) && pblk_recov_check_emeta_md(pblk, emeta_buf)) {
 		pr_info("pblk: %s: emeta_md error\n", __func__);
+		return 1;
 	}
 
 	return 0;
@@ -240,7 +241,7 @@ static int pblk_recov_l2p_from_emeta_group(struct pblk *pblk, struct pblk_line *
 	struct ppa_addr ppa;
 	int pos;
 	int j;
-	int map_id, dev_id;
+	int map_id, dev_id, stripe_id;
 	int nr_valid_lba[NVM_MD_MAX_DEV_CNT];
 	int nr_lba[NVM_MD_MAX_DEV_CNT];
 
@@ -280,21 +281,24 @@ static int pblk_recov_l2p_from_emeta_group(struct pblk *pblk, struct pblk_line *
 		nr_valid_lba[i] = le64_to_cpu(emeta_buf->nr_valid_lbas);
 	}
 
-	map_id = 0;
+	stripe_id = 0;
 	for (i = data_start; i < data_end; i++) {
 		for (j = 0; j < rec_nr_line; j++) {
 			line = lines[j];
+			dev_id = line->dev_id;
 			emeta = line->emeta;
 			emeta_buf = emeta->buf;
 			lba_list = emeta_to_lbas(pblk, emeta_buf);
-			dev_id = lines[j]->dev_id;
 
 			if (pblk_is_raid5(pblk) && j == rec_nr_line - 1)
 				continue;
 			if (pblk_is_raid1(pblk) && j > 0)
 				break;
+			
 			if (!pblk_is_raid1(pblk)) {
 				map_id = dev_id;
+			} else {
+				map_id = lines[stripe_id]->dev_id;
 			}
 
 			ppa = addr_to_gen_ppa(pblk, i, line->id);
@@ -318,11 +322,13 @@ static int pblk_recov_l2p_from_emeta_group(struct pblk *pblk, struct pblk_line *
 			
 			nr_lba[dev_id]++;
 			pblk_update_map(pblk, le64_to_cpu(lba_list[i]), ppa);
+			/*
 			pr_info("pblk: %s: lba %llu in line %d of dev %d\n",
 					__func__, le64_to_cpu(lba_list[i]), line->id, dev_id);
+					*/
 		}
 		if (pblk_is_raid1(pblk))
-			map_id = (map_id + 1) % rec_nr_line;
+			stripe_id = (stripe_id + 1) % rec_nr_line;
 	}
 
 	for (i = 0; i < rec_nr_line; i++) {
@@ -332,7 +338,7 @@ static int pblk_recov_l2p_from_emeta_group(struct pblk *pblk, struct pblk_line *
 		if (pblk_is_raid5(pblk) && i == rec_nr_line - 1)
 			continue;
 		if (nr_valid_lba[dev_id] != nr_lba[dev_id])
-			pr_err("pblk: line %d of dev %d  - inconsistent lba list(%llu/%llu)\n",
+			pr_err("pblk: line %d of dev %d  - inconsistent lba list(%u/%u)\n",
 					line->id, dev_id, nr_valid_lba[dev_id], nr_lba[dev_id]);
 	}
 	return 0;
@@ -1006,7 +1012,7 @@ static void pblk_recov_line_add_ordered(struct list_head *head,
 	struct pblk_line *t = NULL;
 
 	list_for_each_entry(t, head, list)
-		if (t->seq_nr > line->seq_nr)
+		if (t->g_seq_nr > line->g_seq_nr)
 			break;
 
 	__list_add(&line->list, t->list.prev, &t->list);
@@ -1104,6 +1110,7 @@ int pblk_recov_smeta_dev(struct pblk *pblk, int dev_id,
 	struct pblk_smeta *smeta;
 	struct pblk_emeta *emeta;
 	struct line_smeta *smeta_buf;
+	struct line_emeta *emeta_buf;
 	int found_lines = 0;
 	int meta_line;
 	int i, valid_uuid = 0;
@@ -1122,15 +1129,20 @@ int pblk_recov_smeta_dev(struct pblk *pblk, int dev_id,
 	smeta = l_mg->sline_meta[meta_line];
 	emeta = l_mg->eline_meta[meta_line];
 	smeta_buf = (struct line_smeta *)smeta;
+	emeta_buf = (struct line_emeta *)emeta->buf;
 	spin_unlock(&l_mg->free_lock);
 	*meta_line_ptr = meta_line;
 
 	/* Order data lines using their sequence number */
 	for (i = 0; i < l_mg->nr_lines; i++) {
 		u32 crc;
+		
+		if (i > 20)
+			break;
 
 		line = &pblk->lines[dev_id][i];
 
+		// read and check smeta
 		memset(smeta, 0, lm->smeta_len);
 		line->smeta = smeta;
 		line->lun_bitmap = ((void *)(smeta_buf)) +
@@ -1150,11 +1162,13 @@ int pblk_recov_smeta_dev(struct pblk *pblk, int dev_id,
 		crc = pblk_calc_smeta_crc(pblk, smeta_buf);
 		if (le32_to_cpu(smeta_buf->crc) != crc) {
 			//pr_info("pblk: %s: line %d crc fail\n", __func__, i);
+			pr_info("pblk: %s: line %d smata crc fail(emata->crc=0x%x crc=0x%x)\n",
+					__func__, i, le32_to_cpu(smeta_buf->crc), crc);
 			continue;
 		}
 
 		if (le32_to_cpu(smeta_buf->header.identifier) != PBLK_MAGIC) {
-			//pr_info("pblk: %s: line %d smeta identifier fail\n", __func__, i);
+			pr_info("pblk: %s: line %d smeta identifier fail\n", __func__, i);
 			continue;
 		}
 
@@ -1172,10 +1186,34 @@ int pblk_recov_smeta_dev(struct pblk *pblk, int dev_id,
 		}
 
 		if (memcmp(pblk->instance_uuid, smeta_buf->header.uuid, 16)) {
-			pr_debug("pblk: ignore line %u due to uuid mismatch\n",
-					i);
+			pr_info("pblk: ignore line %u due to uuid mismatch\n", i);
 			continue;
 		}
+
+		if (i < 15) {
+			pr_info("pblk: %s: line %d of dev %d pass smeta check\n",
+					__func__, i, dev_id);
+		}
+
+		// read and check emeta
+		line->emeta_ssec = pblk_line_emeta_start(pblk, line);
+		line->emeta = emeta;
+		memset(line->emeta->buf, 0, lm->emeta_len[0]);
+		pr_info("pblk: %s: read emata line_id = %d of dev %d\n",
+				__func__, line->id, dev_id);
+
+		if (pblk_line_read_emeta(pblk, line, line->emeta->buf)) {
+			pr_err("pblk: %s line %d partial written. Abort.We leave this case as future work\n",
+					__func__, line->id);
+			continue;
+		}
+
+		if (pblk_recov_check_emeta(pblk, line->emeta->buf)) {
+			continue;
+		}
+
+		if (pblk_recov_check_line_version(pblk, line->emeta->buf))
+			continue;
 
 		/*
 		if (i < 9 || i >= 20) {
@@ -1183,14 +1221,15 @@ int pblk_recov_smeta_dev(struct pblk *pblk, int dev_id,
 			continue;
 		}
 		*/
-		pr_info("pblk: %s: found line %d to rec\n", __func__, i);
-
 		/* Update line metadata */
 		spin_lock(&line->lock);
 		line->id = le32_to_cpu(smeta_buf->header.id);
 		line->type = le16_to_cpu(smeta_buf->header.type);
 		line->seq_nr = le64_to_cpu(smeta_buf->seq_nr);
+		line->g_seq_nr = le64_to_cpu(emeta_buf->g_seq_nr);
 		spin_unlock(&line->lock);
+		pr_info("pblk: %s: found line %d seq_nr %d,%d of dev %d to rec\n",
+				__func__, i, line->seq_nr, line->g_seq_nr, dev_id);
 
 		/* Update general metadata */
 		spin_lock(&l_mg->free_lock);
@@ -1413,20 +1452,20 @@ int pblk_recov_emeta_dev_group(struct pblk *pblk, struct pblk_line **lines, stru
 
 	// check emeta consistency
 	emeta_buf = lines[0]->emeta->buf;
-	if (emeta_buf->nr_unit != rec_nr_line) {
+	if (le32_to_cpu(emeta_buf->nr_unit) != rec_nr_line) {
 		pr_err("pblk: %s: inconsistent emeta nr_unit %d, rec_nr_line %d\n",
 				__func__, emeta_buf->nr_unit, rec_nr_line);
 	}
 	for (i = 1; i < rec_nr_line; i++) {
 		line = lines[i];
-		x = line->emeta->buf->nr_unit;
-		if (emeta_buf->nr_unit != x) {
+		x = le32_to_cpu(line->emeta->buf->nr_unit);
+		if (x != rec_nr_line) {
 			pr_err("pblk: %s: emeta inconsistent, dev %d line %d nr_unit %d, dev %d line %d nr_unit %d\n",
-					__func__, lines[0]->dev_id, lines[0]->id, emeta_buf->nr_unit, line->dev_id, line->id, x);
+					__func__, lines[0]->dev_id, lines[0]->id, rec_nr_line, line->dev_id, line->id, x);
 			return -1;
 		}
 		if (memcmp(line->emeta->buf->line_units, emeta_buf->line_units, 
-			sizeof(struct pblk_md_line_unit_le)*emeta_buf->nr_unit)) {
+			sizeof(struct pblk_md_line_unit_le)*rec_nr_line)) {
 			pr_err("pblk: %s: corrupt line id %d, seq_nr %d emeta line_units\n", 
 					__func__, line->id, line->seq_nr);
 			return -1;
@@ -1436,8 +1475,8 @@ int pblk_recov_emeta_dev_group(struct pblk *pblk, struct pblk_line **lines, stru
 			__func__, lines[0]->seq_nr);
 
 	if (pblk_recov_l2p_from_emeta_group(pblk, lines, rec_nr_line)) {
-		pr_err("pblk: %s: recov l2p from emeta of line %d fail. Abort\n",
-				__func__, line->id);
+		pr_err("pblk: %s: recov l2p from emeta seq_nr %d fail. Abort\n",
+				__func__, lines[0]->seq_nr);
 		return (-EINVAL);
 	}
 
@@ -1698,7 +1737,7 @@ int pblk_recov_l2p_raid5(struct pblk *pblk)
 	struct pblk_smeta *smeta[NVM_MD_MAX_DEV_CNT];
 	struct pblk_emeta *emeta[NVM_MD_MAX_DEV_CNT];
 	struct pblk_emeta *emeta_tmp[NVM_MD_MAX_DEV_CNT];
-	struct line_smeta *smeta_buf[NVM_MD_MAX_DEV_CNT];
+	//struct line_smeta *smeta_buf[NVM_MD_MAX_DEV_CNT];
 	int found_lines[NVM_MD_MAX_DEV_CNT];
 	int meta_line[NVM_MD_MAX_DEV_CNT];
 	int err_no[NVM_MD_MAX_DEV_CNT];
@@ -1713,12 +1752,15 @@ int pblk_recov_l2p_raid5(struct pblk *pblk)
 	int rec_nr_line;
 	int cur_seq_nr, last_seq_nr;
 
+	for (i = 0; i < pblk->nr_dev; i++) {
+		l_mg[i] = &pblk->l_mg[i];
+	}
+
 	if (pblk->on_resize) 
 		last_nr_dev--;
 
-	for (i = 0; i < pblk->nr_dev; i++) {
+	for (i = 0; i < last_nr_dev; i++) {
 		dev_id = i;
-		l_mg[i] = &pblk->l_mg[i];
 
 		INIT_LIST_HEAD(&recov_list[i]);
 		found_lines[i] = pblk_recov_smeta_dev(pblk, dev_id, &recov_list[i], &meta_line[i], &err_no[i]);
@@ -1735,7 +1777,7 @@ int pblk_recov_l2p_raid5(struct pblk *pblk)
 
 		smeta[i] = l_mg[i]->sline_meta[meta_line[i]];
 		emeta[i] = l_mg[i]->eline_meta[meta_line[i]];
-		smeta_buf[i] = (struct line_smeta *)smeta;
+		//smeta_buf[i] = (struct line_smeta *)smeta;
 	}
 
 	/*
@@ -1744,6 +1786,13 @@ int pblk_recov_l2p_raid5(struct pblk *pblk)
 		return -1;
 	}
 	*/
+	for (i = 0; i < last_nr_dev; i++) {
+		//pr_info("pblk: %s: dev %d rec lines:\n", __func__, i);
+		list_for_each_entry(line[i], &recov_list[i], list) {
+			pr_info("pblk: %s: dev %d, line %d, g_seq_nr %d\n",
+					__func__, i, line[i]->id, line[i]->g_seq_nr);
+		}
+	}
 
 	for (i = 0; i < last_nr_dev; i++)
 		line[i] = list_first_entry(&recov_list[i], typeof(*line[i]), list);
@@ -1752,7 +1801,7 @@ int pblk_recov_l2p_raid5(struct pblk *pblk)
 		last_seq_nr = cur_seq_nr;
 		for (i = 0; i < last_nr_dev; i++) {
 			if (&line[i]->list != &recov_list[i]) {
-				cur_seq_nr = line[i]->seq_nr;
+				cur_seq_nr = line[i]->g_seq_nr;
 				break;
 			}
 		}
@@ -1761,9 +1810,9 @@ int pblk_recov_l2p_raid5(struct pblk *pblk)
 					__func__, recovered_lines);
 			goto out;
 		} 
-		for (i = 1; i < last_nr_dev; i++) {
-			if (&line[i]->list != &recov_list[i] && cur_seq_nr > line[i]->seq_nr)
-				cur_seq_nr = line[i]->seq_nr;
+		for (i = 0; i < last_nr_dev; i++) {
+			if (&line[i]->list != &recov_list[i] && cur_seq_nr > line[i]->g_seq_nr)
+				cur_seq_nr = line[i]->g_seq_nr;
 		}
 		if (cur_seq_nr != last_seq_nr + 1) {
 			pr_err("pblk: %s: last_seq_nr %d, cur_seq_nr %d\n",
@@ -1773,9 +1822,11 @@ int pblk_recov_l2p_raid5(struct pblk *pblk)
 
 		rec_nr_line = 0;
 		for (i = 0; i < last_nr_dev; i++) {
-			if (cur_seq_nr == line[i]->seq_nr) {
+			if (cur_seq_nr == line[i]->g_seq_nr) {
 				line_buf[rec_nr_line] = line[i];
 				emeta_tmp[rec_nr_line] = emeta[i];
+				pr_info("pblk: %s: rec seq_nr %d line %d dev %d\n",
+						__func__, line[i]->g_seq_nr, line[i]->id, line[i]->dev_id);
 				rec_nr_line++;
 			}
 		}
@@ -1790,7 +1841,7 @@ int pblk_recov_l2p_raid5(struct pblk *pblk)
 		recovered_lines++;
 		// next line rec
 		for (i = 0; i < last_nr_dev; i++) {
-			if (&line[i]->list != &recov_list[i] && cur_seq_nr == line[i]->seq_nr)
+			if (&line[i]->list != &recov_list[i] && cur_seq_nr == line[i]->g_seq_nr)
 				tline[i] = list_next_entry(line[i], list);
 		}
 
@@ -1802,14 +1853,14 @@ int pblk_recov_l2p_raid5(struct pblk *pblk)
 		}
 		gid++;
 
-		pr_info("pblk: %s: begin recov line emeta seq_nr %d, nr_line %d\n",
+		pr_info("pblk: %s: begin recov line emeta g_seq_nr %d, nr_line %d\n",
 					__func__, cur_seq_nr, rec_nr_line);
 		if (pblk_recov_emeta_dev_group(pblk, line_buf, emeta_tmp, rec_nr_line)) {
 			pr_err("pblk: %s: err to recov line seq_nr %d\n",
 					__func__, cur_seq_nr);
 			return -1;
 		}
-		pr_info("pblk: %s: rec md_line seq_nr %d finish\n",
+		pr_info("pblk: %s: rec md_line g_seq_nr %d finish\n",
 				__func__, cur_seq_nr);
 		for (i = 0; i < rec_nr_line; i++) {
 			if (pblk_line_is_full(line_buf[i])) {
@@ -1837,8 +1888,12 @@ int pblk_recov_l2p_raid5(struct pblk *pblk)
 				return -1;
 			}
 		}
-		for (i = 0; i < last_nr_dev; i++)
-			line[i] = tline[i];
+
+		for (i = 0; i < last_nr_dev; i++) {
+			if (&line[i]->list != &recov_list[i] && cur_seq_nr == line[i]->g_seq_nr) {
+				line[i] = tline[i];
+			}
+		}
 	}
 
 out:
@@ -1850,6 +1905,12 @@ out:
 	}
 	if (pblk->on_resize) {
 		// todo
+		/*
+		dev_id = pblk->nr_dev - 1;
+		spin_lock(&l_mg[dev_id]->free_lock);
+		l_mg[dev_id]->d_seq_nr = cur_seq_nr + 1;
+		spin_unlock(&l_mg[dev_id]->free_lock);
+		*/
 	}
 
 	pr_info("pblk: %s: recov raid5 succ\n", __func__);
@@ -1860,13 +1921,14 @@ int pblk_recov_l2p(struct pblk  *pblk)
 {
 	switch (pblk->md_mode) {
 		case PBLK_SD:
-			return pblk_recov_l2p_sd(pblk);
+			//return pblk_recov_l2p_sd(pblk);
 		case PBLK_RAID0:
-			pr_err("pblk: %s: md_mode %d not ok now\n", __func__, pblk->md_mode);
-			return pblk_recov_l2p_raid0(pblk);
+			//pr_err("pblk: %s: md_mode %d not ok now\n", __func__, pblk->md_mode);
+			//return pblk_recov_l2p_raid0(pblk);
 		case PBLK_RAID1:
 			pr_err("pblk: %s: md_mode %d not ok now\n", __func__, pblk->md_mode);
-			return pblk_recov_l2p_raid1(pblk);
+			//return pblk_recov_l2p_raid1(pblk);
+			return -1;
 		case PBLK_RAID5:
 			return pblk_recov_l2p_raid5(pblk);
 		default:
