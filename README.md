@@ -26,10 +26,14 @@ This work focuses on the third one.
 
 ### Done
 
-SD/RAID0/RAID1/RAID5 normal path
+1. SD/RAID0/RAID1/RAID5 normal path
+2. Recover from poweroff: all modes
+3. Read error handling: raid1/raid5
+4. Resize: raid5(only support raid5 now)
 
-### Todo
+### TODO
 
-* Recover from poweroff
-* Error handling: RAID1/RAID5
+* Recovery from device failures: lines or the whole device
+* resize of raid0/raid1
+
 * Perf compared to software raid on multiple pblks

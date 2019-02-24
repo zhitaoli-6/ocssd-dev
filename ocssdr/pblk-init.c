@@ -118,6 +118,9 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 
 	if (factory_init) {
 		pblk->stripe_size = pblk->nr_dev;
+		if (pblk_is_raid5(pblk)) {
+			pblk->stripe_size = 3;
+		}
 		pblk_setup_uuid(pblk);
 	} else {
 		pr_err("pblk: %s: begin recover l2p\n", __func__);
