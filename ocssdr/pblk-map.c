@@ -232,7 +232,7 @@ static inline void pblk_clean_group_lba_raid5(struct pblk *pblk, int dev_id, u64
 	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
 	struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
 	struct pblk_line *line; struct pblk_emeta *emeta; __le64 *lba_list;
-	int unit_id;
+	//int unit_id;
 	int parity_id = group->nr_unit - 1;
 	int parity_dev_id =  group->line_units[parity_id].dev_id;
 	line = pblk_line_get_data(pblk, parity_dev_id);

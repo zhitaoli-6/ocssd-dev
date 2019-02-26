@@ -29,6 +29,7 @@
 #include <linux/uuid.h>
 #include <linux/dma-mapping.h>
 #include <linux/rbtree.h>
+#include <linux/delay.h>
 
 #include <linux/lightnvm.h>
 #include "nvme.h"
@@ -63,6 +64,8 @@
 
 #define KMALLOC_PARITY
 #define ATOMIC_STRIPE
+
+#define NAIVE_SCHE
 
 //#define P2L_CLEAN
 //
@@ -170,6 +173,16 @@ struct pblk_raid5_read_ctx {
 	atomic_t completion_cnt;
 };
 
+struct pblk_err_rec_ctx {
+	void *err_data;
+	void *data[NVM_MD_MAX_DEV_CNT];
+
+	unsigned int data_len;
+	int nr_child_io;
+	atomic_t completion_cnt;
+
+	struct completion wait;
+};
 
 /* read context */
 struct pblk_g_ctx {
@@ -305,6 +318,16 @@ struct pblk_gc {
 	spinlock_t lock;
 	spinlock_t w_lock;
 	spinlock_t r_lock;
+};
+
+struct pblk_err_rec {
+	int nr_p_rec; // #lines can be recovered in parallel
+	struct task_struct *monitor_ts;;
+	struct task_struct *err_rec_ts;
+
+	struct list_head err_line_list;
+
+	spinlock_t lock;
 };
 
 struct pblk_rl {
@@ -573,6 +596,9 @@ struct pblk_line_mgmt {
 	struct list_head gc_full_list;	/* Full lines ready to GC, no valid */
 	struct list_head gc_empty_list;	/* Full lines close, all valid */
 
+	/* Error recovery list */
+	struct list_head err_read_list;
+
 	struct pblk_line *log_line;	/* Current FTL log line */
 	struct pblk_line *data_line;	/* Current data line */
 	struct pblk_line *log_next;	/* Next FTL log line */
@@ -831,6 +857,7 @@ struct pblk {
 	struct timer_list wtimer;
 
 	struct pblk_gc gc;
+	struct pblk_err_rec err_rec;
 };
 
 struct pblk_line_ws {
@@ -1026,6 +1053,13 @@ void pblk_gc_sysfs_state_show(struct pblk *pblk, int *gc_enabled,
 int pblk_gc_sysfs_force(struct pblk *pblk, int force);
 
 /*
+ * pblk error recovery: line or device
+ */
+
+int pblk_err_rec_init(struct pblk* pblk);
+void pblk_err_rec_exit(struct pblk* pblk);
+
+/*
  * pblk rate limiter
  */
 void pblk_rl_init(struct pblk_rl *rl, int budget);
@@ -1072,6 +1106,7 @@ static inline int pblk_schedule_line_group(struct pblk *pblk, int *dev_buf, int 
 	int map[NVM_MD_MAX_DEV_CNT];
 	int max, i;
 	int dev, d;
+#ifndef NAIVE_SCHE
 	memset(map, 0, sizeof(map));
 	for (i = 0; i < nr; i++) {
 		max = 0;
@@ -1094,6 +1129,11 @@ static inline int pblk_schedule_line_group(struct pblk *pblk, int *dev_buf, int 
 			i++;
 		}
 	}
+#else
+	for (d = 0; d < nr; d++) {
+		dev_buf[d] = d;
+	}
+#endif
 	for (i = 0; i < nr; i++) {
 		pr_info("pblk: %s: result %d/%d dev %d, free_lines %d\n",
 				__func__, i, nr, dev_buf[i], pblk->l_mg[dev_buf[i]].nr_free_lines);

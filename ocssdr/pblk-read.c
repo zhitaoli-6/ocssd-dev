@@ -1266,7 +1266,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	//generic_start_io_acct(q, READ, bio_sectors(bio), &pblk->disk->part0); 
 	bitmap_zero(&read_bitmap, nr_secs);
 
-	md_r_ctx = kzalloc(sizeof(struct pblk_md_read_ctx), GFP_ATOMIC);
+	md_r_ctx = kzalloc(sizeof(struct pblk_md_read_ctx), GFP_KERNEL);
 	if (!md_r_ctx) {
 		pr_err("pblk: %s: not able to alloc md_r_ctx\n", __func__);
 		return NVM_IO_ERR;

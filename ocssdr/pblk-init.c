@@ -420,7 +420,7 @@ static int pblk_core_init(struct pblk *pblk)
 	pblk->pgs_in_buffer = geo->mw_cunits * geo->all_luns * pblk->nr_dev;
 
 	pblk->min_write_pgs = geo->ws_opt * (geo->csecs / PAGE_SIZE);
-	max_write_ppas = pblk->min_write_pgs * geo->all_luns * pblk->nr_dev;
+	max_write_ppas = pblk->min_write_pgs * geo->all_luns;
 	pblk->max_write_pgs = min_t(int, max_write_ppas, NVM_MAX_VLBA);
 	pblk_set_sec_per_write(pblk, pblk->min_write_pgs);
 
@@ -957,6 +957,7 @@ static int pblk_line_mg_init(struct pblk *pblk, int dev_id)
 	INIT_LIST_HEAD(&l_mg->gc_empty_list);
 
 	INIT_LIST_HEAD(&l_mg->emeta_list);
+	INIT_LIST_HEAD(&l_mg->err_read_list);
 
 	l_mg->gc_lists[0] = &l_mg->gc_high_list;
 	l_mg->gc_lists[1] = &l_mg->gc_mid_list;
@@ -1349,6 +1350,8 @@ static void pblk_exit(void *private)
 	struct pblk *pblk = private;
 
 	down_write(&pblk_lock);
+	pr_info("pblk: err_rec kthread exit...\n");
+	pblk_err_rec_exit(pblk);
 	pr_info("pblk: gc exit...\n");
 	pblk_gc_exit(pblk);
 	pr_info("pblk: tear down...\n");
@@ -1420,7 +1423,9 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 
 	pblk->disk = tdisk;
 	pblk->state = PBLK_STATE_RUNNING;
-	pblk->gc.gc_enabled = 0;
+
+	// useless here, will be reset in following pblk_gc_init
+	//pblk->gc.gc_enabled = 0;
 
 	spin_lock_init(&pblk->trans_lock);
 	spin_lock_init(&pblk->lock);
@@ -1492,6 +1497,12 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 
 	// capacity bug
 	//pblk_set_capacity(pblk);
+	// here we test linux kthread: err-rec
+	ret = pblk_err_rec_init(pblk);
+	if (ret) {
+		pr_info("pblk: %s: err_rec init ret %d\n", __func__, ret);
+		goto fail_free_l2p;
+	}
 
 	ret = pblk_md_init(pblk, flags);
 	if (ret) {

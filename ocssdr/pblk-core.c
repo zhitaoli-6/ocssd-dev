@@ -1608,7 +1608,7 @@ void pblk_pipeline_stop(struct pblk *pblk)
 		l_mg = &pblk->l_mg[dev_id];
 
 		mB =  l_mg->data_line->left_msecs * 4;
-		pr_info("pblk: %s: leave dev %d line %d seq_nr %d g_seq_nr %d, left_secs %d partial\n", 
+		pr_info("pblk: %s: pad dev %d line %d seq_nr %d,%d,left_secs %d\n",
 				__func__, dev_id, l_mg->data_line->id, l_mg->data_line->seq_nr,
 				l_mg->data_line->g_seq_nr, l_mg->data_line->left_msecs);
 		//ret = 0;
@@ -1621,7 +1621,7 @@ void pblk_pipeline_stop(struct pblk *pblk)
 			return;
 		}
 		ms = ((long)e_jiff - (long)s_jiff);
-		pr_info("pblk: pad line bindwidth: %lu MB/s\n",(mB)/(ms*1000/HZ) );
+		pr_info("pblk: pad line bindwidth: %lu MB/s\n",(mB)/(ms*1000/HZ));
 
 		pr_info("pblk: wait for pad writes of dev %d\n", dev_id);
 		pblk_line_close_meta_sync(pblk, dev_id);
