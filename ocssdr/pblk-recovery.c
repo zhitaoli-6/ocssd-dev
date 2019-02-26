@@ -1252,15 +1252,6 @@ int pblk_recov_smeta_dev(struct pblk *pblk, int dev_id,
 	pr_info("pblk: %s: found %d line of dev %d to rec\n",
 			__func__, found_lines, dev_id);
 
-	if (!found_lines) {
-		pblk_setup_uuid(pblk);
-
-		spin_lock(&l_mg->free_lock);
-		WARN_ON_ONCE(!test_and_clear_bit(meta_line,
-							&l_mg->meta_bitmap));
-		spin_unlock(&l_mg->free_lock);
-
-	}
 	pr_info("--------------------------\n");
 	return found_lines;
 }
@@ -1769,11 +1760,14 @@ int pblk_recov_l2p_raid5(struct pblk *pblk)
 					__func__, dev_id);
 			return -1;
 		}
+		/*
 		if (found_lines[i] == 0 && !(pblk->on_resize && i == pblk->nr_dev-1)) {
 			pr_err("pblk: %s: recov_smeta of dev %d fail\n", 
 					__func__, dev_id);
 			return -1;
 		}
+		*/
+		//pr_info("pblk: %s: dev %d, meta_line %d\n", __func__, i, meta_line[i]);
 
 		smeta[i] = l_mg[i]->sline_meta[meta_line[i]];
 		emeta[i] = l_mg[i]->eline_meta[meta_line[i]];
@@ -1847,6 +1841,7 @@ int pblk_recov_l2p_raid5(struct pblk *pblk)
 
 		//  update line_group info
 		group = &set->line_groups[gid];
+		group->nr_unit = rec_nr_line;
 		for (i = 0; i < rec_nr_line; i++) {
 			group->line_units[i].dev_id = line_buf[i]->dev_id;
 			group->line_units[i].line_id = line_buf[i]->id;
@@ -1913,7 +1908,10 @@ out:
 		*/
 	}
 
-	pr_info("pblk: %s: recov raid5 succ\n", __func__);
+	pr_info("pblk: %s: recov raid5 succ, recov lines %d\n",
+			__func__, recovered_lines);
+	if (recovered_lines == 0)
+		pblk_setup_uuid(pblk);
 	return recovered_lines;
 }
 
