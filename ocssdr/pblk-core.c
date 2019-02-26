@@ -1585,6 +1585,10 @@ void pblk_pipeline_stop(struct pblk *pblk)
 {
 	struct pblk_line_mgmt * l_mg;
 	int ret, dev_id;
+	unsigned long s_jiff, e_jiff;
+	unsigned long mB; // megebytes
+	unsigned long ms; // milliseconds
+
 	spin_lock(&pblk->lock);
 	if (pblk->state == PBLK_STATE_RECOVERING ||
 					pblk->state == PBLK_STATE_STOPPED) {
@@ -1603,16 +1607,21 @@ void pblk_pipeline_stop(struct pblk *pblk)
 		pr_info("pblk: pad writes of dev %d...\n", dev_id);
 		l_mg = &pblk->l_mg[dev_id];
 
+		mB =  l_mg->data_line->left_msecs * 4;
 		pr_info("pblk: %s: leave dev %d line %d seq_nr %d g_seq_nr %d, left_secs %d partial\n", 
 				__func__, dev_id, l_mg->data_line->id, l_mg->data_line->seq_nr,
 				l_mg->data_line->g_seq_nr, l_mg->data_line->left_msecs);
 		//ret = 0;
 
+		s_jiff = jiffies;
 		ret = pblk_recov_pad(pblk, dev_id);
+		e_jiff = jiffies;
 		if (ret) {
 			pr_err("pblk: could not close data on teardown(%d)\n", ret);
 			return;
 		}
+		ms = ((long)e_jiff - (long)s_jiff);
+		pr_info("pblk: pad line bindwidth: %lu MB/s\n",(mB)/(ms*1000/HZ) );
 
 		pr_info("pblk: wait for pad writes of dev %d\n", dev_id);
 		pblk_line_close_meta_sync(pblk, dev_id);
