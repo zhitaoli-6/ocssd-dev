@@ -106,7 +106,14 @@ static int pblk_err_group_check(struct pblk *pblk, int gid)
 	return 0;
 }
 
-void __pblk_end_io_read_rec_md(struct pblk_err_rec_ctx *rec_ctx)
+void pblk_read_line_complete(struct kref *ref)
+{
+	struct pblk_err_rec_rq *rec_rq = container_of(ref, struct pblk_err_rec_rq, ref);
+	
+	complete(&rec_rq->wait);
+}
+
+void __pblk_end_io_read_rec_md(struct pblk_err_rec_rq *rec_rq, struct pblk_err_rec_ctx *rec_ctx)
 {
 	unsigned long *src, *dst;
 	unsigned long data_len, long_len;
@@ -138,14 +145,16 @@ void __pblk_end_io_read_rec_md(struct pblk_err_rec_ctx *rec_ctx)
 			goto out;
 		}
 out:
-		complete(&rec_ctx->wait);
+		kfree(rec_ctx);
+		kref_put(&rec_rq->ref, pblk_read_line_complete);
 		return;
 	}
 }
 
 void pblk_end_io_read_rec_child(struct nvm_rq *rqd)
 {
-	struct pblk *pblk = rqd->private;
+	struct pblk_err_rec_rq *rec_rq= rqd->private;
+	struct pblk *pblk = rec_rq->pblk;
 	struct nvm_tgt_dev *dev = rqd->dev;
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *bio = rqd->bio;
@@ -164,7 +173,7 @@ void pblk_end_io_read_rec_child(struct nvm_rq *rqd)
 #endif
 	
 
-	__pblk_end_io_read_rec_md((struct pblk_err_rec_ctx *)r_ctx->private);
+	__pblk_end_io_read_rec_md(rec_rq, (struct pblk_err_rec_ctx *)r_ctx->private);
 
 	//bio_put(rqd->bio);
 	pblk_free_rqd(pblk, rqd, PBLK_READ);
@@ -184,6 +193,7 @@ static int pblk_err_rec_start(struct pblk *pblk, struct pblk_line **err_lines,
 	struct nvm_rq *rqd;
 	struct pblk_g_ctx *r_ctx;
 
+	struct pblk_err_rec_rq *rec_rq;
 	struct pblk_err_rec_ctx *rec_ctx;
 	struct bio *bio;
 
@@ -191,6 +201,7 @@ static int pblk_err_rec_start(struct pblk *pblk, struct pblk_line **err_lines,
 	void *p_data[NVM_MD_MAX_DEV_CNT]; // parity
 	
 	unsigned long s_jiff, e_jiff;
+	unsigned long long off;
 
 	unsigned int nr_child_secs;
 	struct ppa_addr dev_ppa;
@@ -200,8 +211,8 @@ static int pblk_err_rec_start(struct pblk *pblk, struct pblk_line **err_lines,
 	int i, d, u, j;
 	int ret;
 	
-	unsigned int batch_size = PBLK_MAX_REQ_ADDRS;
-	unsigned int buf_len = geo->csecs * batch_size;
+	unsigned long batch_size = PBLK_MAX_REQ_ADDRS;
+	size_t buf_len = (unsigned long long)geo->csecs * lm->sec_per_line;
 	err_rec = &pblk->err_rec;
 
 	for (i = 0; i < nr_err_line; i++) {
@@ -226,7 +237,7 @@ static int pblk_err_rec_start(struct pblk *pblk, struct pblk_line **err_lines,
 				__func__, line->id, line->dev_id, line->g_seq_nr);
 
 		for (d = 0; d < pblk->nr_dev; d++) {
-			p_data[d] = vzalloc(buf_len);
+			p_data[d] = vmalloc(buf_len);
 			if (!p_data[d]) {
 				pr_err("pblk: %s: can not alloc data\n", __func__);
 				ret = -ENOMEM;
@@ -235,6 +246,16 @@ static int pblk_err_rec_start(struct pblk *pblk, struct pblk_line **err_lines,
 		}
 		err_data = p_data[err_dev_id];
 
+		rec_rq = kmalloc(sizeof(struct pblk_err_rec_rq), GFP_KERNEL);
+		if (!rec_rq) {
+			pr_err("pblk: %s: can not alloc rec_rq\n", __func__);
+			goto buf_err;
+		}
+		rec_rq->pblk = pblk;
+		init_completion(&rec_rq->wait);
+		kref_init(&rec_rq->ref);
+
+		off = 0;
 		s_addr = lm->smeta_sec;
 next_rq:
 		e_addr = s_addr + batch_size;
@@ -246,20 +267,19 @@ next_rq:
 		if (!rec_ctx) {
 			pr_err("pblk: %s: can not alloc err_rec_ctx\n",
 					__func__);
-			return -ENOMEM;
+			goto rq_err;
 		}
-		rec_ctx->err_data = err_data;
+		rec_ctx->err_data = err_data + off;
 		rec_ctx->data_len = nr_child_secs * geo->csecs;
 		rec_ctx->nr_child_io = group->nr_unit - 1;
 		atomic_set(&rec_ctx->completion_cnt, 0);
-		init_completion(&rec_ctx->wait);
+		kref_get(&rec_rq->ref);
 
 		for (u = 0; u < group->nr_unit; u++) {
 			dev_id = group->line_units[u].dev_id;
 			line_id = group->line_units[u].line_id;
 			if (dev_id == err_dev_id)
 				continue;
-			
 			/*
 			pr_info("pblk: %s: prepare read from line %d dev %d\n",
 					__func__, line_id, dev_id);
@@ -270,7 +290,7 @@ next_rq:
 			rqd->dev = pblk->devs[dev_id];
 			rqd->opcode = NVM_OP_PREAD;
 			rqd->nr_ppas = nr_child_secs;
-			rqd->private = pblk;
+			rqd->private = rec_rq;
 			rqd->end_io = pblk_end_io_read_rec_child;
 			rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_SEQUENTIAL);
 			
@@ -280,7 +300,7 @@ next_rq:
 			rec_ctx->data[dev_id] = p_data[dev_id];
 
 			// fill rqd->bio
-			bio = pblk_bio_map_addr(pblk, p_data[dev_id], nr_child_secs, nr_child_secs*geo->csecs,
+			bio = pblk_bio_map_addr(pblk, p_data[dev_id]+off, nr_child_secs, nr_child_secs*geo->csecs,
 					PBLK_VMALLOC_META, GFP_KERNEL, dev_id);
 			if (IS_ERR(bio)) {
 				pr_err("pblk: %s: can not alloc bio of dev %d\n", __func__, dev_id);
@@ -319,25 +339,39 @@ next_rq:
 				goto submission_err;
 			}
 		}
-		if (!wait_for_completion_io_timeout(&rec_ctx->wait,
+
+		s_addr = e_addr;
+		if(s_addr < line->emeta_ssec)  {
+			goto next_rq;
+			off += rec_ctx->data_len;
+		}
+
+		kref_put(&rec_rq->ref, pblk_read_line_complete);
+
+		if (!wait_for_completion_io_timeout(&rec_rq->wait,
 					msecs_to_jiffies(PBLK_COMMAND_TIMEOUT_MS))) {
 			pr_err("pblk: %s: rec read from s_addr %llu timeout\n", __func__, s_addr);
 			goto timeout;
 		}
-		s_addr = e_addr;
-		if(s_addr < line->emeta_ssec) 
-			goto next_rq;
 
 		e_jiff = jiffies;
 		pr_info("pblk: recover line(read) bindwidth: %llu MB/s\n",
 				((line->emeta_ssec-lm->smeta_sec)*4)/((e_jiff-s_jiff)*1000/HZ));
 
+		kfree(rec_rq);
+		for (i = 0; i < pblk->nr_dev; i++) {
+			if (p_data[i])
+				vfree(p_data[i]);
+		}
 		return 0;
 
 timeout:
 		pr_err("pblk: %s: err timeout\n", __func__);
 prepare_err:
 		pr_err("pblk: %s: prepare error\n", __func__);
+rq_err:
+		kfree(rec_rq);
+buf_err:
 		for (i = 0; i < pblk->nr_dev; i++) {
 			if (p_data[i])
 				vfree(p_data[i]);

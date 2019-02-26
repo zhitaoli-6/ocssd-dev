@@ -173,6 +173,13 @@ struct pblk_raid5_read_ctx {
 	atomic_t completion_cnt;
 };
 
+
+struct pblk_err_rec_rq {
+	struct pblk *pblk;
+	struct completion wait;
+	struct kref ref;
+};
+
 struct pblk_err_rec_ctx {
 	void *err_data;
 	void *data[NVM_MD_MAX_DEV_CNT];
@@ -180,8 +187,6 @@ struct pblk_err_rec_ctx {
 	unsigned int data_len;
 	int nr_child_io;
 	atomic_t completion_cnt;
-
-	struct completion wait;
 };
 
 /* read context */
