@@ -178,7 +178,12 @@ struct pblk_raid5_read_ctx {
 };
 
 
-struct pblk_err_rec_rq {
+struct pblk_err_r_rec_rq {
+	struct pblk *pblk;
+	struct completion wait;
+	struct kref ref;
+};
+struct pblk_err_w_rec_rq {
 	struct pblk *pblk;
 	struct completion wait;
 	struct kref ref;
@@ -734,6 +739,7 @@ struct pblk_md_line_group_set {
 	int nr_group;
 	int cur_group;
 	struct pblk_md_line_group *line_groups;
+	unsigned long rec_bitmap;
 
 	// md data of the running line_group
 	void *parity;
@@ -744,6 +750,8 @@ struct pblk_md_line_group_set {
 	unsigned long nodes_buffer_size;
 	struct rb_root l2p_rb_root;
 	unsigned int rb_size;
+
+	spinlock_t lock;
 };
 
 enum {
@@ -1112,11 +1120,18 @@ static inline void pblk_mfree(void *ptr, int type)
 		vfree(ptr);
 }
 
-static inline int pblk_schedule_line_group(struct pblk *pblk, int gid, int *dev_buf, int nr)
+static inline int pblk_schedule_line_group(struct pblk *pblk, int gid,
+		unsigned long rec_bitmap, int *dev_buf, int nr)
 {
 	int map[NVM_MD_MAX_DEV_CNT];
 	int max, i;
 	int dev, d;
+	int nr_x = pblk->nr_dev - bitmap_weight(&rec_bitmap, NVM_MD_MAX_DEV_CNT);
+	if (nr_x < nr) {
+		pr_err("pblk: %s: nr_candidate %d less than nr_required %d\n",
+				__func__, nr_x, nr);
+		return -1;
+	}
 	switch (pblk->sche_meta.sche_mode) {
 		case PBLK_GROUP_SCHE_CUSTOM:
 			memset(map, 0, sizeof(map));
@@ -1124,7 +1139,7 @@ static inline int pblk_schedule_line_group(struct pblk *pblk, int gid, int *dev_
 				max = 0;
 				dev = -1;
 				for (d = 0; d < pblk->nr_dev; d++) {
-					if (!map[d] && pblk->l_mg[d].nr_free_lines > max) {
+					if (!test_bit(d, &rec_bitmap) && !map[d] && pblk->l_mg[d].nr_free_lines > max) {
 						max = pblk->l_mg[d].nr_free_lines;
 						dev = d;
 					}
@@ -1136,7 +1151,7 @@ static inline int pblk_schedule_line_group(struct pblk *pblk, int gid, int *dev_
 			}
 			i = 0;
 			for (d = 0; d < pblk->nr_dev; d++) {
-				if (map[d]) {
+				if (!test_bit(d, &rec_bitmap) && map[d]) {
 					dev_buf[i] = d;
 					i++;
 				}

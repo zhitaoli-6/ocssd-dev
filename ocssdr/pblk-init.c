@@ -163,7 +163,7 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 			}
 		}
 		// choose first stripe: first nr_unit devs
-		ret = pblk_schedule_line_group(pblk, gid, dev_buf, group->nr_unit);
+		ret = pblk_schedule_line_group(pblk, gid, set->rec_bitmap, dev_buf, group->nr_unit);
 		if (ret) {
 			pr_err("pblk: %s: schedule_line_group fail\n", __func__);
 			return -EFAULT;
@@ -1264,6 +1264,9 @@ static int pblk_line_group_init(struct pblk *pblk) {
 		set->parity = kzalloc(PAGE_SIZE * pblk->min_write_pgs, GFP_KERNEL);
 		set->lba_list = kzalloc(sizeof(__le64)*pblk->min_write_pgs, GFP_KERNEL);
 		set->cpl = kzalloc(sizeof(struct pblk_md_cpl), GFP_KERNEL);
+		
+		bitmap_zero(&set->rec_bitmap, NVM_MD_MAX_DEV_CNT);
+		spin_lock_init(&set->lock);
 
 		/*
 		set->nodes_buffer_size = pblk->lm.sec_per_line * pblk->nr_dev;
@@ -1285,7 +1288,7 @@ static int pblk_schedule_init(struct pblk *pblk, int flags){
 	pblk->sche_meta.unit_id = 0;
 	pblk->sche_meta.stripe_id = 0;
 
-	pblk->sche_meta.sche_mode = PBLK_GROUP_SCHE_EXPERI;
+	pblk->sche_meta.sche_mode = PBLK_GROUP_SCHE_NAIVE;
 	return 0;
 }
 

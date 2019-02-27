@@ -11,7 +11,7 @@
 // ret: lines of err injected
 int inject_line_err(struct pblk *pblk)
 {
-	struct pblk_line_mgmt *l_mg;
+	//struct pblk_line_mgmt *l_mg;
 	struct pblk_line *line;
 	struct pblk_err_rec *err_rec;
 	int err_devs[] = {2, 1};
@@ -37,10 +37,10 @@ int inject_line_err(struct pblk *pblk)
 
 static int pblk_err_monitor_run(struct pblk *pblk)
 {
-	struct pblk_line_mgmt *l_mg;
-	struct pblk_line *line;
+	//struct pblk_line_mgmt *l_mg;
+	//struct pblk_line *line;
 	struct pblk_err_rec *err_rec;
-	int i, nr_p_rec, nr_line;
+	//int i, nr_p_rec, nr_line;
 	int ret;
 
 	//pr_info("pblk: %s called\n", __func__);
@@ -108,12 +108,16 @@ static int pblk_err_group_check(struct pblk *pblk, int gid)
 
 void pblk_read_line_complete(struct kref *ref)
 {
-	struct pblk_err_rec_rq *rec_rq = container_of(ref, struct pblk_err_rec_rq, ref);
-	
+	struct pblk_err_r_rec_rq *rec_rq = container_of(ref, struct pblk_err_r_rec_rq, ref);
+	complete(&rec_rq->wait);
+}
+void pblk_write_line_complete(struct kref *ref)
+{
+	struct pblk_err_w_rec_rq *rec_rq = container_of(ref, struct pblk_err_w_rec_rq, ref);
 	complete(&rec_rq->wait);
 }
 
-void __pblk_end_io_read_rec_md(struct pblk_err_rec_rq *rec_rq, struct pblk_err_rec_ctx *rec_ctx)
+void __pblk_end_io_read_rec_md(struct pblk_err_r_rec_rq *r_rec_rq, struct pblk_err_rec_ctx *rec_ctx)
 {
 	unsigned long *src, *dst;
 	unsigned long data_len, long_len;
@@ -146,16 +150,16 @@ void __pblk_end_io_read_rec_md(struct pblk_err_rec_rq *rec_rq, struct pblk_err_r
 		}
 out:
 		kfree(rec_ctx);
-		kref_put(&rec_rq->ref, pblk_read_line_complete);
+		kref_put(&r_rec_rq->ref, pblk_read_line_complete);
 		return;
 	}
 }
 
 void pblk_end_io_read_rec_child(struct nvm_rq *rqd)
 {
-	struct pblk_err_rec_rq *rec_rq= rqd->private;
-	struct pblk *pblk = rec_rq->pblk;
-	struct nvm_tgt_dev *dev = rqd->dev;
+	struct pblk_err_r_rec_rq *r_rec_rq= rqd->private;
+	struct pblk *pblk = r_rec_rq->pblk;
+	//struct nvm_tgt_dev *dev = rqd->dev;
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *bio = rqd->bio;
 
@@ -173,11 +177,164 @@ void pblk_end_io_read_rec_child(struct nvm_rq *rqd)
 #endif
 	
 
-	__pblk_end_io_read_rec_md(rec_rq, (struct pblk_err_rec_ctx *)r_ctx->private);
+	__pblk_end_io_read_rec_md(r_rec_rq, (struct pblk_err_rec_ctx *)r_ctx->private);
 
 	//bio_put(rqd->bio);
 	pblk_free_rqd(pblk, rqd, PBLK_READ);
 	atomic_dec(&pblk->inflight_io);
+}
+
+static void pblk_end_io_rec_write(struct nvm_rq *rqd)
+{
+	struct pblk_err_w_rec_rq *w_rec_rq = rqd->private;
+	struct pblk *pblk = w_rec_rq->pblk;
+
+	int dev_id = pblk_get_rq_dev_id(pblk, rqd);
+	if (dev_id < 0) {
+		pr_err("pblk: %s rqd undefined dev\n", __func__);
+		dev_id = DEFAULT_DEV_ID;
+	}
+
+	pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas, dev_id);
+
+	pblk_free_rqd(pblk, rqd, PBLK_WRITE_INT);
+
+	atomic_dec(&pblk->inflight_io);
+	kref_put(&w_rec_rq->ref, pblk_write_line_complete);
+}
+
+static int pblk_alloc_rec_line(struct pblk *pblk)
+{
+	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
+	struct pblk_md_line_group *group;
+
+	unsigned long rec_bitmap;
+	int rec_dev_id = -1, dev_id;
+	int u;
+
+	spin_lock(&set->lock);
+	group = &set->line_groups[set->cur_group];
+
+	rec_bitmap = set->rec_bitmap;
+	for (u = 0; u < group->nr_unit; u++) {
+		dev_id = group->line_units[u].dev_id;
+		set_bit(dev_id, &rec_bitmap);
+	}
+
+	rec_dev_id = find_first_zero_bit(&rec_bitmap, NVM_MD_MAX_DEV_CNT);
+	if (rec_dev_id >= pblk->nr_dev) {
+		spin_unlock(&set->lock);
+		pr_err("pblk: %s: can not alloc rec_line as target\n", __func__);
+		return -1;
+	}
+
+	set_bit(rec_dev_id, &set->rec_bitmap);
+	spin_unlock(&set->lock);
+	return rec_dev_id;
+}
+
+static int pblk_submit_rec_write(struct pblk *pblk, struct pblk_line *line,
+		struct pblk_err_w_rec_rq *w_rec_rq, int nr_secs, void *data)
+{
+	int dev_id = line->dev_id;
+	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
+	struct nvm_geo *geo = &dev->geo;
+	struct ppa_addr *ppa_list;
+	struct pblk_sec_meta *meta_list;
+	struct nvm_rq *rqd;
+	struct bio *bio;
+	dma_addr_t dma_ppa_list, dma_meta_list;
+	__le64 *lba_list = emeta_to_lbas(pblk, line->emeta->buf);
+	u64 w_ptr = line->cur_sec;
+	int left_line_ppas, rq_ppas, rq_len;
+	int i, j;
+	int ret = 0;
+    int meta_list_idx; //add by kan
+    int meta_list_mod; //add by kan
+
+	pr_info("pblk: %s: write to line %d of dev %d, nr_secs %d, cur_sec %d\n",
+			__func__, line->id, dev_id, nr_secs, line->cur_sec);
+	return 0;
+	rq_ppas = nr_secs;
+	rq_len = rq_ppas * geo->csecs;
+
+	meta_list = nvm_dev_dma_alloc(dev->parent, GFP_KERNEL, &dma_meta_list);
+    if (!meta_list) {
+        pr_info("pblk: %s: meta list dma cannot alloc\n", __func__);
+		ret = -ENOMEM;
+		goto fail_free_rq;
+	}
+
+	ppa_list = (void *)(meta_list) + pblk_dma_meta_size;
+	dma_ppa_list = dma_meta_list + pblk_dma_meta_size;
+
+	bio = pblk_bio_map_addr(pblk, data, rq_ppas, rq_len,
+						PBLK_VMALLOC_META, GFP_KERNEL, dev_id);
+	if (IS_ERR(bio)) {
+		ret = PTR_ERR(bio);
+		goto fail_free_meta;
+	}
+
+	bio->bi_iter.bi_sector = 0; /* internal bio */
+	bio_set_op_attrs(bio, REQ_OP_WRITE, 0);
+
+	rqd = pblk_alloc_rqd(pblk, PBLK_WRITE_INT);
+
+	rqd->bio = bio;
+	rqd->opcode = NVM_OP_PWRITE;
+	rqd->flags = pblk_set_progr_mode(pblk, PBLK_WRITE);
+	rqd->meta_list = meta_list;
+	rqd->nr_ppas = rq_ppas;
+	rqd->ppa_list = ppa_list;
+	rqd->dma_ppa_list = dma_ppa_list;
+	rqd->dma_meta_list = dma_meta_list;
+	rqd->end_io = pblk_end_io_rec_write;
+	rqd->private = w_rec_rq;
+	rqd->dev = dev;
+	
+    for (i = 0; i < rqd->nr_ppas; ) {
+		struct ppa_addr ppa;
+		int pos;
+
+		w_ptr = pblk_alloc_page(pblk, line, pblk->min_write_pgs);
+		ppa = addr_to_gen_ppa(pblk, w_ptr, line->id);
+		pos = pblk_ppa_to_pos(geo, ppa);
+
+		for (j = 0; j < pblk->min_write_pgs; j++, i++, w_ptr++) {
+			struct ppa_addr dev_ppa;
+			__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
+
+			dev_ppa = addr_to_gen_ppa(pblk, w_ptr, line->id);
+			rqd->ppa_list[i] = dev_ppa;
+
+			dev_ppa = pblk_set_ppa_dev_id(dev_ppa, dev_id);
+			pblk_map_invalidate(pblk, dev_ppa);
+
+            meta_list_idx = i / geo->ws_min; //add by kan
+            meta_list_mod = dev_ppa.m.sec % geo->ws_min; //add by kan
+
+			lba_list[w_ptr] = meta_list[meta_list_idx].lba[meta_list_mod] = addr_empty; //modify by kan
+		}
+	}
+
+	kref_get(&w_rec_rq->ref);
+	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas, dev_id);
+
+	ret = pblk_submit_io(pblk, rqd, dev_id);
+	if (ret) {
+		pr_err("pblk: I/O submission failed: %d\n", ret);
+		pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas, dev_id);
+		goto fail_free_bio;
+	}
+	return ret;
+
+fail_free_bio:
+	bio_put(bio);
+fail_free_meta:
+	nvm_dev_dma_free(dev->parent, meta_list, dma_meta_list);
+	//dma_free_coherent(ctrl->dev, size, meta_list, dma_meta_list); //add by kan
+fail_free_rq:
+	return ret;
 }
 
 static int pblk_err_rec_start(struct pblk *pblk, struct pblk_line **err_lines,
@@ -189,30 +346,33 @@ static int pblk_err_rec_start(struct pblk *pblk, struct pblk_line **err_lines,
 	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
 	struct pblk_md_line_group *group;
 	struct pblk_err_rec *err_rec;
-	struct pblk_line *line;
+	struct pblk_line *line, *rec_line;
 	struct nvm_rq *rqd;
 	struct pblk_g_ctx *r_ctx;
 
-	struct pblk_err_rec_rq *rec_rq;
+	struct pblk_err_r_rec_rq *r_rec_rq = NULL;
+	struct pblk_err_w_rec_rq *w_rec_rq = NULL;
 	struct pblk_err_rec_ctx *rec_ctx;
 	struct bio *bio;
 
-	void *err_data;
 	void *p_data[NVM_MD_MAX_DEV_CNT]; // parity
-	
-	unsigned long s_jiff, e_jiff;
-	unsigned long long off;
+	void *tmp_buf, *w_buf, *r_buf;
 
-	unsigned int nr_child_secs;
+	unsigned long rec_bitmap;
+	unsigned long s_jiff, e_jiff; unsigned long long off;
+	unsigned long long line_data_sec;
+
+	unsigned int nr_child_secs, batch_sec;
 	struct ppa_addr dev_ppa;
-	u64 paddr, s_addr, e_addr;
-	int dev_id, err_dev_id;
+	u64 s_addr, e_addr;
+	int dev_id, err_dev_id, rec_dev_id;
 	int gid, line_id;
 	int i, d, u, j;
 	int ret;
 	
 	//unsigned long IO_SIZE = PBLK_MAX_REQ_ADDRS;
 	unsigned long IO_SIZE = pblk->min_write_pgs; // min_write_pgs: 8
+	unsigned long W_SIZE = pblk->min_write_pgs; // min_write_pgs: 8
 	unsigned long BATCH_SIZE = IO_SIZE * geo->all_luns; // all_luns: 32
 	//unsigned long BATCH_SIZE = lm->sec_per_line; // all_luns: 32
 	size_t buf_len = (unsigned long long)geo->csecs * BATCH_SIZE; // pipeline: save memory
@@ -226,11 +386,11 @@ static int pblk_err_rec_start(struct pblk *pblk, struct pblk_line **err_lines,
 	pr_info("pblk: %s: called, sleep for 8s!!!!!!!!!!!!!!!!!!!!\n",__func__);
 	msleep(8000);
 
+	s_jiff = jiffies;
 	for (i = 0; i < nr_err_line; i++) {
-		s_jiff = jiffies;
 		line = err_lines[i];
 		pr_info("pblk: %s: begin recover err line %d g_seq_nr %d of dev %d\n",
-				__func__, line->id, line->dev_id, line->g_seq_nr);
+				__func__, line->id, line->g_seq_nr, line->dev_id);
 
 		err_dev_id = line->dev_id;
 		gid = line->g_seq_nr;
@@ -239,29 +399,58 @@ static int pblk_err_rec_start(struct pblk *pblk, struct pblk_line **err_lines,
 			return -1;
 		pr_info("pblk: %s: err line %d g_seq_nr %d of dev %d PASS group check\n",
 				__func__, line->id, line->dev_id, line->g_seq_nr);
+		line_data_sec = line->emeta_ssec - lm->smeta_sec;
+		if (line_data_sec % W_SIZE) {
+			pr_err("pblk: %s: line_data_sec mod W_SIZE not 0\n", __func__);
+			ret = -1;
+			goto out;
+		}
+		
+		// alloc rec_line as dst
+		if ((rec_dev_id = pblk_alloc_rec_line(pblk)) < 0)
+			return -1;
+		rec_line = pblk_line_get_data(pblk, rec_dev_id);
+		pr_err("pblk: %s: err_line %d of dev %d -> rec_line %d of dev %d\n",
+				__func__, line->id, err_dev_id, rec_line->id, rec_dev_id);
 
+		// alloc io buf
+		w_buf = vmalloc((unsigned long long)lm->sec_per_line*geo->csecs);
+		r_buf = vmalloc(buf_len);
 		for (d = 0; d < pblk->nr_dev; d++) {
 			p_data[d] = vmalloc(buf_len);
-			if (!p_data[d]) {
+			if (!r_buf || !w_buf || !p_data[d]) {
 				pr_err("pblk: %s: can not alloc data\n", __func__);
 				ret = -ENOMEM;
 				return ret;
 			}
 		}
-		err_data = p_data[err_dev_id];
 
-		rec_rq = kmalloc(sizeof(struct pblk_err_rec_rq), GFP_KERNEL);
-		if (!rec_rq) {
-			pr_err("pblk: %s: can not alloc rec_rq\n", __func__);
-			goto buf_err;
+		// write recov wait
+		w_rec_rq = kmalloc(sizeof(struct pblk_err_w_rec_rq), GFP_KERNEL);
+		if (!w_rec_rq) {
+			ret = -ENOMEM;	
+			goto out;
 		}
-		rec_rq->pblk = pblk;
+		w_rec_rq->pblk = pblk;
+		init_completion(&w_rec_rq->wait);
+		kref_init(&w_rec_rq->ref);
+
+		// read recov wait
+		r_rec_rq = kmalloc(sizeof(struct pblk_err_r_rec_rq), GFP_KERNEL);
+		if (!r_rec_rq) {
+			pr_err("pblk: %s: can not alloc r_rec_rq\n", __func__);
+			ret = -ENOMEM;
+			goto out;
+		}
+		r_rec_rq->pblk = pblk;
 
 		s_addr = lm->smeta_sec;
+		// read from parities
 next_batch:
-		init_completion(&rec_rq->wait);
-		kref_init(&rec_rq->ref);
+		init_completion(&r_rec_rq->wait);
+		kref_init(&r_rec_rq->ref);
 
+		tmp_buf = w_buf+s_addr*geo->csecs;
 		off = 0;
 next_rq:
 		e_addr = s_addr + IO_SIZE;
@@ -274,13 +463,13 @@ next_rq:
 		if (!rec_ctx) {
 			pr_err("pblk: %s: can not alloc err_rec_ctx\n",
 					__func__);
-			goto rq_err;
+			goto out;
 		}
-		rec_ctx->err_data = err_data + off;
+		rec_ctx->err_data = r_buf + off;
 		rec_ctx->data_len = nr_child_secs * geo->csecs;
 		rec_ctx->nr_child_io = group->nr_unit - 1;
 		atomic_set(&rec_ctx->completion_cnt, 0);
-		kref_get(&rec_rq->ref);
+		kref_get(&r_rec_rq->ref);
 
 		for (u = 0; u < group->nr_unit; u++) {
 			dev_id = group->line_units[u].dev_id;
@@ -297,7 +486,7 @@ next_rq:
 			rqd->dev = pblk->devs[dev_id];
 			rqd->opcode = NVM_OP_PREAD;
 			rqd->nr_ppas = nr_child_secs;
-			rqd->private = rec_rq;
+			rqd->private = r_rec_rq;
 			rqd->end_io = pblk_end_io_read_rec_child;
 			rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_SEQUENTIAL);
 			
@@ -324,6 +513,7 @@ next_rq:
 									&rqd->dma_meta_list);
 			if (!rqd->meta_list) {
 				pr_err("pblk: not able to allocate ppa list\n");
+				ret = -ENOMEM;
 				goto prepare_err;
 			}
 			if (nr_child_secs > 1) {
@@ -354,45 +544,82 @@ next_rq:
 				goto next_rq;
 		}
 
-		kref_put(&rec_rq->ref, pblk_read_line_complete);
-
-		if (!wait_for_completion_io_timeout(&rec_rq->wait,
+		/* ----------------------------BARRIER------------------------------- */
+		kref_put(&r_rec_rq->ref, pblk_read_line_complete);
+		if (!wait_for_completion_io_timeout(&r_rec_rq->wait,
 					msecs_to_jiffies(PBLK_COMMAND_TIMEOUT_MS))) {
 			pr_err("pblk: %s: rec read from s_addr %llu timeout\n", __func__, s_addr);
+			ret = -ETIME;
 			goto timeout;
 		}
+		pr_info("pblk: %s: rec batch read to %llu sync\n",
+				__func__, s_addr);
 
-		// ISSUE_WRITE
+		/* -----------------------ISSUE WRITE & READ-------------------------- */
 		
-		if (s_addr < line->emeta_ssec)
-			goto next_batch;
+		memcpy(tmp_buf, r_buf, off);
+		batch_sec = off / geo->csecs;
+		pr_info("pblk: %s: batch_sec %u s_addr %llu\n",
+				__func__, batch_sec, (u64)tmp_buf - (u64)w_buf);
 
-		e_jiff = jiffies;
-		pr_info("pblk: recover line(read) bindwidth: %llu MB/s\n",
-				((line->emeta_ssec-lm->smeta_sec)*4)/((e_jiff-s_jiff)*1000/HZ));
+		pr_info("pblk: %s: sleep 10s\n", __func__);
+		msleep(10000);
 
-		kfree(rec_rq);
-		for (i = 0; i < pblk->nr_dev; i++) {
-			if (p_data[i])
-				vfree(p_data[i]);
+		for (j = 0; j < batch_sec; j+=W_SIZE) {
+			ret = pblk_submit_rec_write(pblk, rec_line, w_rec_rq, W_SIZE,
+						tmp_buf+j*geo->csecs);
+			if (ret < 0) {
+				pr_err("pblk: %s: submit write from s_addr %llu fail\n",
+						__func__, s_addr);
+				goto submission_err;
+			}
 		}
-		return 0;
+
+		// next_batch
+		if (s_addr < line->emeta_ssec) {
+			//goto next_batch;
+		}
+		goto out;
+
+		// ----------------------------BARRIER-------------------------------
+		if (!pblk_line_is_full(rec_line)) {
+			pr_err("pblk: %s: rec_line %d of dev %d not full: left %u\n",
+					__func__, rec_line->id, rec_line->dev_id, rec_line->left_msecs);
+			ret = -1;
+			goto submission_err;
+		}
+		kref_put(&w_rec_rq->ref, pblk_write_line_complete);
+		if (!wait_for_completion_io_timeout(&w_rec_rq->wait,
+					msecs_to_jiffies(PBLK_COMMAND_TIMEOUT_MS))) {
+			pr_err("pblk: %s: wait for rec line write timeout\n", __func__);
+			ret = -ETIME;
+			goto timeout;
+		}
+	}
+
+	e_jiff = jiffies;
+	pr_info("pblk: recover line(read) bindwidth: %lu MB/s\n",
+			(lm->sec_per_line*4)/((e_jiff-s_jiff)*1000/HZ));
+
+	ret = 0;
+	goto out;
 
 timeout:
-		pr_err("pblk: %s: err timeout\n", __func__);
-prepare_err:
-		pr_err("pblk: %s: prepare error\n", __func__);
-rq_err:
-		kfree(rec_rq);
-buf_err:
-		for (i = 0; i < pblk->nr_dev; i++) {
-			if (p_data[i])
-				vfree(p_data[i]);
-		}
+	pr_err("pblk: %s: err timeout\n", __func__);
 submission_err:
-		pr_err("pblk: %s: submission error\n", __func__);
-		return -1;
+	pr_err("pblk: %s: submission error\n", __func__);
+prepare_err:
+	pr_err("pblk: %s: prepare error\n", __func__);
+out:
+	if (r_rec_rq)
+		kfree(r_rec_rq);
+	if (w_rec_rq)
+		kfree(w_rec_rq);
+	for (i = 0; i < pblk->nr_dev; i++) {
+		if (p_data[i])
+			vfree(p_data[i]);
 	}
+	return ret;
 }
 
 static void pblk_err_rec_run(struct pblk *pblk)
