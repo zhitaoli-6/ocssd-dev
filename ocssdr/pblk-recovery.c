@@ -590,8 +590,6 @@ next_pad_rq:
 	rqd->end_io = pblk_end_io_recov;
 	rqd->private = pad_rq;
 	rqd->dev = dev;
-
-
 	
     for (i = 0; i < rqd->nr_ppas; ) {
 		struct ppa_addr ppa;
@@ -612,15 +610,14 @@ next_pad_rq:
 			__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
 
 			dev_ppa = addr_to_gen_ppa(pblk, w_ptr, line->id);
-			dev_ppa = pblk_set_ppa_dev_id(dev_ppa, dev_id);
+			rqd->ppa_list[i] = dev_ppa;
 
+			dev_ppa = pblk_set_ppa_dev_id(dev_ppa, dev_id);
 			pblk_map_invalidate(pblk, dev_ppa);
 
             meta_list_idx = i / geo->ws_min; //add by kan
             meta_list_mod = dev_ppa.m.sec % geo->ws_min; //add by kan
-
 			lba_list[w_ptr] = meta_list[meta_list_idx].lba[meta_list_mod] = addr_empty; //modify by kan
-			rqd->ppa_list[i] = dev_ppa;
 		}
 	}
 
