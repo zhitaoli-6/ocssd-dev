@@ -163,7 +163,7 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 			}
 		}
 		// choose first stripe: first nr_unit devs
-		ret = pblk_schedule_line_group(pblk, dev_buf, group->nr_unit);
+		ret = pblk_schedule_line_group(pblk, gid, dev_buf, group->nr_unit);
 		if (ret) {
 			pr_err("pblk: %s: schedule_line_group fail\n", __func__);
 			return -EFAULT;
@@ -1280,10 +1280,12 @@ static int pblk_line_group_init(struct pblk *pblk) {
 }
 
 
-static int pblk_md_init(struct pblk *pblk, int flags){
+static int pblk_schedule_init(struct pblk *pblk, int flags){
 	// scheduler
 	pblk->sche_meta.unit_id = 0;
 	pblk->sche_meta.stripe_id = 0;
+
+	pblk->sche_meta.sche_mode = PBLK_GROUP_SCHE_EXPERI;
 	return 0;
 }
 
@@ -1488,6 +1490,13 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
         printk("pblk: target factory\n"); //add by kan for debug
 	}
 
+	ret = pblk_schedule_init(pblk, flags);
+	if (ret) {
+		pr_err("pblk: could not initialize md info\n");
+		goto fail_free_l2p;
+	}
+	pr_info("pblk: done pblk_schedule_init\n");
+
 	ret = pblk_l2p_init(pblk, flags & NVM_TARGET_FACTORY);
 	if (ret) {
 		pr_err("pblk: could not initialize maps. Please remove this blk and try again\n");
@@ -1503,13 +1512,6 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 		pr_info("pblk: %s: err_rec init ret %d\n", __func__, ret);
 		goto fail_free_l2p;
 	}
-
-	ret = pblk_md_init(pblk, flags);
-	if (ret) {
-		pr_err("pblk: could not initialize md info\n");
-		goto fail_free_l2p;
-	}
-	pr_info("pblk: done pblk_md_init\n");
 
 	ret = pblk_writer_init(pblk);
 	if (ret) {

@@ -50,7 +50,7 @@ static void pblk_md_new_group(struct pblk *pblk)
 	set->cur_group++;
 	group = &set->line_groups[set->cur_group];
 	group->nr_unit = nr_unit;
-	ret = pblk_schedule_line_group(pblk, dev_buf, nr_unit);
+	ret = pblk_schedule_line_group(pblk, set->cur_group, dev_buf, nr_unit);
 	if (ret < 0) {
 		pr_err("pblk: %s: fail schedule new line_group\n", __func__);
 		for (i = 0; i < nr_unit; i++)

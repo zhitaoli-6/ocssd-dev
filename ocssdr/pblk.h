@@ -65,8 +65,6 @@
 #define KMALLOC_PARITY
 #define ATOMIC_STRIPE
 
-#define NAIVE_SCHE
-
 //#define P2L_CLEAN
 //
 //#define META_READ
@@ -74,6 +72,12 @@
 enum {
 	// NVM_TARGET_FACTORY = 1 << 0, in file "uapi/linux/lightnvm.h"
 	PBLK_TARGET_RESIZE = 1 << 1,
+};
+
+enum {
+	PBLK_GROUP_SCHE_NAIVE = 1 << 0,
+	PBLK_GROUP_SCHE_EXPERI = 1 << 1,
+	PBLK_GROUP_SCHE_CUSTOM = 1 << 2,
 };
 
 enum {
@@ -705,6 +709,8 @@ struct pblk_schedule_meta {
 	struct pblk_dev_perf_info *perf_info;
 	struct pblk_dev_age_info *age_info;
 
+	int sche_mode;
+
 	unsigned int stripe_id;
 	unsigned int unit_id;
 };
@@ -1106,39 +1112,52 @@ static inline void pblk_mfree(void *ptr, int type)
 		vfree(ptr);
 }
 
-static inline int pblk_schedule_line_group(struct pblk *pblk, int *dev_buf, int nr)
+static inline int pblk_schedule_line_group(struct pblk *pblk, int gid, int *dev_buf, int nr)
 {
 	int map[NVM_MD_MAX_DEV_CNT];
 	int max, i;
 	int dev, d;
-#ifndef NAIVE_SCHE
-	memset(map, 0, sizeof(map));
-	for (i = 0; i < nr; i++) {
-		max = 0;
-		dev = -1;
-		for (d = 0; d < pblk->nr_dev; d++) {
-			if (!map[d] && pblk->l_mg[d].nr_free_lines > max) {
-				max = pblk->l_mg[d].nr_free_lines;
-				dev = d;
+	switch (pblk->sche_meta.sche_mode) {
+		case PBLK_GROUP_SCHE_CUSTOM:
+			memset(map, 0, sizeof(map));
+			for (i = 0; i < nr; i++) {
+				max = 0;
+				dev = -1;
+				for (d = 0; d < pblk->nr_dev; d++) {
+					if (!map[d] && pblk->l_mg[d].nr_free_lines > max) {
+						max = pblk->l_mg[d].nr_free_lines;
+						dev = d;
+					}
+				}
+				if (dev == -1)
+					return -1;
+				dev_buf[i] = dev;
+				map[dev] = 1;
 			}
-		}
-		if (dev == -1)
-			return -1;
-		dev_buf[i] = dev;
-		map[dev] = 1;
+			i = 0;
+			for (d = 0; d < pblk->nr_dev; d++) {
+				if (map[d]) {
+					dev_buf[i] = d;
+					i++;
+				}
+			}
+			pr_info("pblk: scheule line group as CUTSTOM\n");
+			break;
+		case PBLK_GROUP_SCHE_EXPERI:
+			if (pblk->nr_dev == 5 && nr == 3) {
+				pr_info("pblk: schedule line group as EXPERI\n");
+				if (gid == 1) {
+					for (d = 0; d < nr; d++)
+						dev_buf[d] = d + 1;
+					break;
+				}
+			}
+		default:
+			pr_info("pblk: schedule line group as NAIVE\n");
+			for (d = 0; d < nr; d++) {
+				dev_buf[d] = d;
+			}
 	}
-	i = 0;
-	for (d = 0; d < pblk->nr_dev; d++) {
-		if (map[d]) {
-			dev_buf[i] = d;
-			i++;
-		}
-	}
-#else
-	for (d = 0; d < nr; d++) {
-		dev_buf[d] = d;
-	}
-#endif
 	for (i = 0; i < nr; i++) {
 		pr_info("pblk: %s: result %d/%d dev %d, free_lines %d\n",
 				__func__, i, nr, dev_buf[i], pblk->l_mg[dev_buf[i]].nr_free_lines);

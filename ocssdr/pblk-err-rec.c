@@ -14,8 +14,8 @@ int inject_line_err(struct pblk *pblk)
 	struct pblk_line_mgmt *l_mg;
 	struct pblk_line *line;
 	struct pblk_err_rec *err_rec;
-	int err_devs[] = {0, 1};
-	int err_lines[] = {9, 9};
+	int err_devs[] = {2, 1};
+	int err_lines[] = {9, 10};
 	int err_dev_id = err_devs[0];
 	int err_line_id = err_lines[0];
 
@@ -211,8 +211,12 @@ static int pblk_err_rec_start(struct pblk *pblk, struct pblk_line **err_lines,
 	int i, d, u, j;
 	int ret;
 	
-	unsigned long batch_size = PBLK_MAX_REQ_ADDRS;
-	size_t buf_len = (unsigned long long)geo->csecs * lm->sec_per_line;
+	//unsigned long IO_SIZE = PBLK_MAX_REQ_ADDRS;
+	unsigned long IO_SIZE = pblk->min_write_pgs; // min_write_pgs: 8
+	unsigned long BATCH_SIZE = IO_SIZE * geo->all_luns; // all_luns: 32
+	//unsigned long BATCH_SIZE = lm->sec_per_line; // all_luns: 32
+	size_t buf_len = (unsigned long long)geo->csecs * BATCH_SIZE; // pipeline: save memory
+
 	err_rec = &pblk->err_rec;
 
 	for (i = 0; i < nr_err_line; i++) {
@@ -252,16 +256,19 @@ static int pblk_err_rec_start(struct pblk *pblk, struct pblk_line **err_lines,
 			goto buf_err;
 		}
 		rec_rq->pblk = pblk;
+
+		s_addr = lm->smeta_sec;
+next_batch:
 		init_completion(&rec_rq->wait);
 		kref_init(&rec_rq->ref);
 
 		off = 0;
-		s_addr = lm->smeta_sec;
 next_rq:
-		e_addr = s_addr + batch_size;
+		e_addr = s_addr + IO_SIZE;
 		if (e_addr > line->emeta_ssec)
 			e_addr = line->emeta_ssec;
 		nr_child_secs = e_addr - s_addr;
+		//pr_info("pblk: %s: rec bad line (%llu, %llu)\n", __func__, s_addr, e_addr);;
 
 		rec_ctx = kzalloc(sizeof(struct pblk_err_rec_ctx), GFP_KERNEL);
 		if (!rec_ctx) {
@@ -341,9 +348,10 @@ next_rq:
 		}
 
 		s_addr = e_addr;
-		if(s_addr < line->emeta_ssec)  {
-			goto next_rq;
-			off += rec_ctx->data_len;
+		off += rec_ctx->data_len;
+		if(s_addr < line->emeta_ssec) {
+			if (off < BATCH_SIZE * geo->csecs)
+				goto next_rq;
 		}
 
 		kref_put(&rec_rq->ref, pblk_read_line_complete);
@@ -353,6 +361,11 @@ next_rq:
 			pr_err("pblk: %s: rec read from s_addr %llu timeout\n", __func__, s_addr);
 			goto timeout;
 		}
+
+		// ISSUE_WRITE
+		
+		if (s_addr < line->emeta_ssec)
+			goto next_batch;
 
 		e_jiff = jiffies;
 		pr_info("pblk: recover line(read) bindwidth: %llu MB/s\n",
