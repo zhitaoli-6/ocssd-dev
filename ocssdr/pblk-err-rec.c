@@ -35,6 +35,16 @@ int inject_line_err(struct pblk *pblk)
 	return 0;
 }
 
+static void pblk_rec_reader_kick(struct pblk_err_rec *err_rec)
+{
+	wake_up_process(err_rec->rec_r_ts);
+}
+
+static void pblk_rec_writer_kick(struct pblk_err_rec *err_rec)
+{
+	wake_up_process(err_rec->rec_w_ts);
+}
+
 static int pblk_err_monitor_run(struct pblk *pblk)
 {
 	//struct pblk_line_mgmt *l_mg;
@@ -46,7 +56,7 @@ static int pblk_err_monitor_run(struct pblk *pblk)
 	//pr_info("pblk: %s called\n", __func__);
 
 	err_rec = &pblk->err_rec;
-	spin_lock(&err_rec->lock);
+	spin_lock(&err_rec->r_lock);
 	/*
 	nr_line = 0;
 	for (i = 0; i < pblk->nr_dev; i++) {
@@ -63,7 +73,10 @@ static int pblk_err_monitor_run(struct pblk *pblk)
 	*/
 	ret = inject_line_err(pblk);
 	//pr_info("pblk: %s: inject err_line %d\n", __func__, ret);
-	spin_unlock(&err_rec->lock);
+	spin_unlock(&err_rec->r_lock);
+	if (ret) {
+		pblk_rec_reader_kick(err_rec);
+	}
 	return ret;
 }
 
@@ -234,7 +247,7 @@ static int pblk_alloc_rec_line(struct pblk *pblk)
 	return rec_dev_id;
 }
 
-static int pblk_submit_rec_write(struct pblk *pblk, struct pblk_line *line,
+static int pblk_rec_submit_write(struct pblk *pblk, struct pblk_line *line,
 		struct pblk_err_w_rec_rq *w_rec_rq, int nr_secs, void *data)
 {
 	int dev_id = line->dev_id;
@@ -358,6 +371,7 @@ static int pblk_err_rec_start(struct pblk *pblk, struct pblk_line **err_lines,
 	struct pblk_err_r_rec_rq *r_rec_rq = NULL;
 	struct pblk_err_w_rec_rq *w_rec_rq = NULL;
 	struct pblk_err_rec_ctx *rec_ctx;
+	struct pblk_err_rec_write_t *task;
 	struct bio *bio;
 
 	void *p_data[NVM_MD_MAX_DEV_CNT]; // parity
@@ -372,6 +386,7 @@ static int pblk_err_rec_start(struct pblk *pblk, struct pblk_line **err_lines,
 	unsigned int nr_child_secs, batch_sec;
 	struct ppa_addr dev_ppa;
 	u64 s_addr, e_addr;
+	int is_last_batch;
 	int dev_id, err_dev_id, rec_dev_id;
 	int gid, line_id;
 	int i, d, u, j;
@@ -454,6 +469,7 @@ static int pblk_err_rec_start(struct pblk *pblk, struct pblk_line **err_lines,
 
 		s_jiff = jiffies;
 		s_addr = lm->smeta_sec;
+		is_last_batch = 0;
 		// read from parities
 next_batch:
 		init_completion(&r_rec_rq->wait);
@@ -574,6 +590,8 @@ next_rq:
 
 		// -----------------------ISSUE WRITE & READ--------------------------
 		jf1 = jiffies;
+		if (s_addr >= line->emeta_ssec)
+			is_last_batch = 1;
 		batch_sec = off / geo->csecs;
 		//pr_info("pblk: %s: batch_sec %u s_addr %llu\n",
 				//__func__, batch_sec, (u64)batch_buf - (u64)w_buf);
@@ -581,37 +599,44 @@ next_rq:
 		//pr_info("pblk: %s: sleep 10s\n", __func__);
 		//msleep(10000);
 
+		spin_lock(&err_rec->w_lock);
 		for (j = 0; j < batch_sec; j+=W_SIZE) {
-			ret = pblk_submit_rec_write(pblk, rec_line, w_rec_rq, W_SIZE,
-						batch_buf+j*geo->csecs);
-			//pr_err("pblk: %s: submit write to addr %llu ret %d\n",
-					//__func__, s_addr, ret);
-			if (ret < 0) {
-				pr_err("pblk: %s: submit write to addr %llu fail\n",
-						__func__, s_addr);
+			task = kmalloc(sizeof(struct pblk_err_rec_write_t), GFP_KERNEL);
+			if (!task) {
+				pr_err("pblk: %s: can not alloc write_task\n", __func__);
+				ret = -ENOMEM;
+				spin_unlock(&err_rec->w_lock);
 				goto out;
-				//goto submission_err;
 			}
+			task->line = rec_line;
+			task->w_rec_rq = w_rec_rq;
+			task->nr_secs = W_SIZE;
+			task->data = batch_buf + j * geo->csecs;
+			task->is_sync = 0;
+			if (is_last_batch && j + W_SIZE >= batch_sec) 
+				task->is_sync = 1;
+			list_add_tail(&task->list, &err_rec->w_list);
 		}
+		spin_unlock(&err_rec->w_lock);
+		pblk_rec_writer_kick(err_rec);
 		jf2 = jiffies;
 		sub_w_cost += jf2 - jf1;
+		
 		// next_batch
 		if (s_addr < line->emeta_ssec) {
 			goto next_batch;
 		}
-
 		// ----------------------------BARRIER-------------------------------
-		if (!pblk_line_is_full(rec_line)) {
-			pr_err("pblk: %s: rec_line %d of dev %d not full: left %u\n",
-					__func__, rec_line->id, rec_line->dev_id, rec_line->left_msecs);
-			ret = -1;
-		}
-		kref_put(&w_rec_rq->ref, pblk_write_line_complete);
 		if (!wait_for_completion_io_timeout(&w_rec_rq->wait,
 					msecs_to_jiffies(PBLK_COMMAND_TIMEOUT_MS))) {
 			pr_err("pblk: %s: wait for rec line write timeout\n", __func__);
 			ret = -ETIME;
 			goto timeout;
+		}
+		if (!pblk_line_is_full(rec_line)) {
+			pr_err("pblk: %s: rec_line %d of dev %d not full: left %u\n",
+					__func__, rec_line->id, rec_line->dev_id, rec_line->left_msecs);
+			ret = -1;
 		}
 		pr_info("pblk: %s: rec write to line %d of dev %d sync\n",
 				__func__, rec_line->id, rec_line->dev_id);
@@ -647,7 +672,7 @@ out:
 	return ret;
 }
 
-static void pblk_err_rec_run(struct pblk *pblk)
+static int pblk_err_rec_read(struct pblk *pblk)
 {
 	struct pblk_err_rec *err_rec;
 	struct pblk_line *err_lines[NVM_MD_MAX_DEV_CNT];
@@ -655,14 +680,14 @@ static void pblk_err_rec_run(struct pblk *pblk)
 	int nr_err_line, i;
 	int ret = 0;
 
-	//pr_info("pblk: %s called\n", __func__);
+	pr_info("pblk: %s called\n", __func__);
 
 	err_rec = &pblk->err_rec;
 
-	spin_lock(&err_rec->lock);
+	spin_lock(&err_rec->r_lock);
 	if (list_empty(&err_rec->err_line_list)) {
-		spin_unlock(&err_rec->lock);
-		return;
+		spin_unlock(&err_rec->r_lock);
+		return 1;
 	}
 	i = 0;
 	list_for_each_entry_safe(line, tline, &err_rec->err_line_list, list) {
@@ -675,20 +700,52 @@ static void pblk_err_rec_run(struct pblk *pblk)
 			spin_unlock(&line->lock);
 			pr_err("pblk: %s: line %d of %d state not BAD\n",
 					__func__, line->id, line->dev_id);
-			return;
+			return 1;
 		}
 		spin_unlock(&line->lock);
 	}
 	nr_err_line = i;
-	spin_unlock(&err_rec->lock);
+	spin_unlock(&err_rec->r_lock);
 
 	pr_info("pblk: %s: prepare recover %d line\n",
 			__func__, nr_err_line);
 	if (!nr_err_line)
-		return;
+		return 1;
 	
 	ret = pblk_err_rec_start(pblk, err_lines, nr_err_line);
 	pr_info("pblk: %s: ret code %d\n", __func__, ret);
+	return ret;
+}
+
+static int pblk_err_rec_write(struct pblk *pblk)
+{
+	struct pblk_err_rec *err_rec = &pblk->err_rec;
+	struct pblk_err_rec_write_t *task, *ttask;
+	LIST_HEAD(w_list);
+	int ret;
+
+	//pr_info("pblk: %s: called\n", __func__);
+
+	spin_lock(&err_rec->w_lock);
+	if (list_empty(&err_rec->w_list)) {
+		spin_unlock(&err_rec->w_lock);
+		return 1;
+	}
+	list_cut_position(&w_list, &err_rec->w_list, err_rec->w_list.prev);
+	spin_unlock(&err_rec->w_lock);
+	
+	list_for_each_entry_safe(task, ttask, &w_list, list) {
+		ret = pblk_rec_submit_write(pblk, task->line, task->w_rec_rq,
+				task->nr_secs, task->data);
+		if (task->is_sync) {
+			kref_put(&task->w_rec_rq->ref, pblk_write_line_complete);
+		}
+		list_del(&task->list);
+		kfree(task);
+		if (ret < 0) {
+			pr_err("pblk: %s: submit write fail\n", __func__);
+		}
+	}
 }
 
 static int pblk_monitor_ts(void *data)
@@ -707,12 +764,25 @@ static int pblk_rec_r_ts(void *data)
 {
 	struct pblk *pblk = data;
 	while (!kthread_should_stop()) {
-		pblk_err_rec_run(pblk);
-		//set_current_state(TASK_INTERRUPTIBLE);
-		//schedule();
-		msleep(SLEEP_MS);
+		if(!pblk_err_rec_read(pblk))
+			continue;
+		set_current_state(TASK_INTERRUPTIBLE);
+		io_schedule();
+		//msleep(SLEEP_MS);
 	}
 	return 2;
+}
+
+static int pblk_rec_w_ts(void *data)
+{
+	struct pblk *pblk = data;
+	while (!kthread_should_stop()) {
+		if(!pblk_err_rec_write(pblk))
+			continue;
+		set_current_state(TASK_INTERRUPTIBLE);
+		io_schedule();
+	}
+	return 3;
 }
 
 int pblk_err_rec_init(struct pblk *pblk)
@@ -739,35 +809,33 @@ int pblk_err_rec_init(struct pblk *pblk)
 		return PTR_ERR(err_rec->monitor_ts);
 	}
 
-	err_rec->rec_r_ts = kthread_create(pblk_rec_r_ts, pblk, "pblk-err-rec-ts");
+	err_rec->rec_r_ts = kthread_create(pblk_rec_r_ts, pblk, "pblk-err-recr-ts");
 	if (IS_ERR(err_rec->rec_r_ts)) {
 		pr_err("pblk: could not allocate reader kthread\n");
 		ret = PTR_ERR(err_rec->rec_r_ts);
 		goto fail_free_monitor_kthread;
 	}
 
-	/*
-	err_rec->rec_w_ts = kthread_create(pblk_rec_w_ts, pblk, "pblk-err-rec-ts");
+	err_rec->rec_w_ts = kthread_create(pblk_rec_w_ts, pblk, "pblk-err-recw-ts");
 	if (IS_ERR(err_rec->rec_w_ts)) {
 		pr_err("pblk: could not allocate writer kthread\n");
-		ret = PTR_ERR(err_rec->rec_r_ts);
-		goto fail_free_monitor_kthread;
+		ret = PTR_ERR(err_rec->rec_w_ts);
+		goto fail_free_rec_r;
 	}
-	*/
 	
-	spin_lock_init(&err_rec->lock);
+	spin_lock_init(&err_rec->r_lock);
+	spin_lock_init(&err_rec->w_lock);
 	INIT_LIST_HEAD(&err_rec->err_line_list);
+	INIT_LIST_HEAD(&err_rec->w_list);
 
 	wake_up_process(err_rec->monitor_ts);
-	wake_up_process(err_rec->rec_r_ts);
+	//wake_up_process(err_rec->rec_r_ts);
 	//wake_up_process(err_rec->rec_w_ts);
 
 	return 0;
 
-	/*
 fail_free_rec_w:
 	kthread_stop(err_rec->rec_w_ts);
-	*/
 fail_free_rec_r:
 	kthread_stop(err_rec->rec_r_ts);
 fail_free_monitor_kthread:
@@ -789,6 +857,12 @@ void pblk_err_rec_exit(struct pblk *pblk)
 	if (err_rec->rec_r_ts) {
 		ret = kthread_stop(err_rec->rec_r_ts);
 		pr_info("pblk: %s: exit rec_r_ts code ret: %d\n",
+				__func__, ret);
+	}
+
+	if (err_rec->rec_w_ts) {
+		ret = kthread_stop(err_rec->rec_w_ts);
+		pr_info("pblk: %s: exit rec_w_ts code ret: %d\n",
 				__func__, ret);
 	}
 }

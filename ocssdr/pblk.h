@@ -334,15 +334,27 @@ struct pblk_gc {
 	spinlock_t r_lock;
 };
 
+struct pblk_err_rec_write_t {
+	struct pblk_line *line;
+	struct pblk_err_w_rec_rq *w_rec_rq;
+	int nr_secs;
+	void *data;
+	
+	int is_sync;
+	struct list_head list;
+};
+
 struct pblk_err_rec {
 	int nr_p_rec; // #lines can be recovered in parallel
 	struct task_struct *monitor_ts;;
 	struct task_struct *rec_r_ts;
 	struct task_struct *rec_w_ts;
 
+	spinlock_t r_lock;
 	struct list_head err_line_list;
 
-	spinlock_t lock;
+	spinlock_t w_lock;
+	struct list_head w_list;
 };
 
 struct pblk_rl {
