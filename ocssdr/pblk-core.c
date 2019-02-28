@@ -1185,6 +1185,7 @@ void pblk_line_setup_emeta_md(struct pblk *pblk, struct pblk_line *line)
 	emeta_buf->g_seq_nr = cpu_to_le64(set->cur_group);
 	emeta_buf->md_mode = cpu_to_le32(pblk->md_mode);
 	emeta_buf->nr_unit = cpu_to_le32(group->nr_unit);
+
 	for (i = 0; i < group->nr_unit; i++) {
 		emeta_buf->line_units[i].dev_id = cpu_to_le32(group->line_units[i].dev_id);
 		emeta_buf->line_units[i].line_id = cpu_to_le32(group->line_units[i].line_id);

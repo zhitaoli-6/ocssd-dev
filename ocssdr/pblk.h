@@ -337,7 +337,8 @@ struct pblk_gc {
 struct pblk_err_rec {
 	int nr_p_rec; // #lines can be recovered in parallel
 	struct task_struct *monitor_ts;;
-	struct task_struct *err_rec_ts;
+	struct task_struct *rec_r_ts;
+	struct task_struct *rec_w_ts;
 
 	struct list_head err_line_list;
 
