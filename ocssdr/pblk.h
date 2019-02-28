@@ -350,6 +350,8 @@ struct pblk_err_rec {
 	struct task_struct *rec_r_ts;
 	struct task_struct *rec_w_ts;
 
+	struct workqueue_struct *reader_wq;
+
 	spinlock_t r_lock;
 	struct list_head err_line_list;
 
@@ -1186,10 +1188,12 @@ static inline int pblk_schedule_line_group(struct pblk *pblk, int gid,
 				dev_buf[d] = d;
 			}
 	}
+	pr_info("----------------new md---------------\n");
 	for (i = 0; i < nr; i++) {
 		pr_info("pblk: %s: result %d/%d dev %d, free_lines %d\n",
 				__func__, i, nr, dev_buf[i], pblk->l_mg[dev_buf[i]].nr_free_lines);
 	}
+	pr_info("----------------new md---------------\n");
 	return 0;
 }
 

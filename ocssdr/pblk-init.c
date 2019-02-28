@@ -1288,7 +1288,7 @@ static int pblk_schedule_init(struct pblk *pblk, int flags){
 	pblk->sche_meta.unit_id = 0;
 	pblk->sche_meta.stripe_id = 0;
 
-	pblk->sche_meta.sche_mode = PBLK_GROUP_SCHE_NAIVE;
+	pblk->sche_meta.sche_mode = PBLK_GROUP_SCHE_EXPERI;
 	return 0;
 }
 
