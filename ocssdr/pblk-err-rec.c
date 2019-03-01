@@ -260,6 +260,10 @@ static int pblk_alloc_rec_line(struct pblk *pblk)
 		pr_err("pblk: %s: can not alloc rec_line as target\n", __func__);
 		return -1;
 	}
+	/*
+	if (!test_bit(4, &set->rec_bitmap))
+		rec_dev_id = 4;
+		*/
 
 	set_bit(rec_dev_id, &set->rec_bitmap);
 	spin_unlock(&set->lock);
@@ -408,7 +412,8 @@ static void pblk_rec_line_ws(struct work_struct *work)
 	//void *w_buf, *r_buf;
 
 	unsigned long s_jiff, e_jiff, jf1, jf2, jf3;
-	unsigned long sub_w_cost = 0, sub_r_cost = 0, wait_r_cost = 0;
+	unsigned long sub_r_cost = 0, wait_r_cost = 0;
+	unsigned long sub_w_cost = 0, wait_w_cost = 0;
 	unsigned long long off;
 	unsigned long long line_data_sec;
 	unsigned int nr_child_secs, batch_sec;
@@ -665,10 +670,12 @@ next_rq:
 			__func__, rec_line->id, rec_line->dev_id);
 
 	e_jiff = jiffies;
+	wait_w_cost = e_jiff - jf2;
 	pr_info("pblk: recover line(read) bindwidth: %lu MB/s\n",
 			(lm->sec_per_line*4)/((e_jiff-s_jiff)*1000/HZ));
-	pr_info("pblk: total %lu ms, sub_r_cost %lu ms, wait_r_cost %lu ms, sub_w_cost %lu ms\n",
-			(e_jiff-s_jiff)*1000/HZ, (sub_r_cost*1000)/HZ, wait_r_cost*1000/HZ, sub_w_cost*1000/HZ);
+	pr_info("pblk: total %lu, sub_r %lu, wait_r %lu; sub_w %lu, wait_w %lu\n",
+			(e_jiff-s_jiff)*1000/HZ, (sub_r_cost*1000)/HZ,
+			wait_r_cost*1000/HZ, sub_w_cost*1000/HZ, wait_w_cost*1000/HZ);
 
 	ret = 0;
 	goto free_rq;
