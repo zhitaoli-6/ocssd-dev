@@ -27,6 +27,14 @@
 #define PAGE_SECTORS_SHIFT	(PAGE_SHIFT - SECTOR_SHIFT)
 #define PAGE_SECTORS		(1 << PAGE_SECTORS_SHIFT)
 
+static unsigned long read_nr = 0;
+static unsigned long last_print_read = 0;
+unsigned long print_read_step = 1024;
+
+static unsigned long write_nr = 0;
+static unsigned long last_print_write = 0;
+unsigned long print_write_step = 1024;
+
 /*
  * Each block ramdisk device has a radix_tree brd_pages of pages that stores
  * the pages containing the block device's contents. A brd page's ->index is
@@ -287,9 +295,31 @@ static blk_qc_t brd_make_request(struct request_queue *q, struct bio *bio)
 	sector_t sector;
 	struct bvec_iter iter;
 
-	printk(KERN_NOTICE "sbull: %s: op %s, lba %10lu, size %10u, partno %u\n", 
-			bio->bi_disk->disk_name, (bio_data_dir(bio) == WRITE?"write":"read"), 
-			bio->bi_iter.bi_sector, bio_sectors(bio), bio->bi_partno);
+	if (bio_data_dir(bio) == WRITE) {
+		write_nr += bio_sectors(bio);
+		if (write_nr >= last_print_write + print_write_step) {
+			printk(KERN_NOTICE "my-brd %s: write sectors %lu\n",
+					bio->bi_disk->disk_name, write_nr);
+			/*
+			printk(KERN_NOTICE "sbull: %s: op %s, lba %10lu, size %10u, partno %u\n",
+					bio->bi_disk->disk_name, (bio_data_dir(bio) == WRITE?"write":"read"),
+					bio->bi_iter.bi_sector, bio_sectors(bio), bio->bi_partno);
+					*/
+			last_print_write += print_write_step;
+		}
+	} else {
+		read_nr += bio_sectors(bio);
+		if (read_nr >= last_print_read + print_read_step) {
+			printk(KERN_NOTICE "my-brd %s: read sectors %lu\n",
+					bio->bi_disk->disk_name, read_nr);
+			/*
+			printk(KERN_NOTICE "sbull: %s: op %s, lba %10lu, size %10u, partno %u\n",
+					bio->bi_disk->disk_name, (bio_data_dir(bio) == WRITE?"write":"read"),
+					bio->bi_iter.bi_sector, bio_sectors(bio), bio->bi_partno);
+					*/
+			last_print_read += print_read_step;
+		}
+	}
 
 	sector = bio->bi_iter.bi_sector;
 	if (bio_end_sector(bio) > get_capacity(bio->bi_disk))
@@ -334,11 +364,12 @@ static const struct block_device_operations brd_fops = {
 /*
  * And now the modules code and kernel interface.
  */
-static int rd_nr = 1;
+static int rd_nr = 4;
 module_param(rd_nr, int, S_IRUGO);
 MODULE_PARM_DESC(rd_nr, "Maximum number of brd devices");
 
-unsigned long rd_size = CONFIG_BLK_DEV_RAM_SIZE;
+//unsigned long rd_size = CONFIG_BLK_DEV_RAM_SIZE;
+unsigned long rd_size = 1024*1024;
 module_param(rd_size, ulong, S_IRUGO);
 MODULE_PARM_DESC(rd_size, "Size of each RAM disk in kbytes.");
 

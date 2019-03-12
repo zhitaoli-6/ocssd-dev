@@ -1,0 +1,2 @@
+rmmod ./my-brd.ko
+insmod ./my-brd.ko
