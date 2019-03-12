@@ -237,7 +237,7 @@ static int pblk_recov_l2p_from_emeta_group(struct pblk *pblk, struct pblk_line *
 	__le64 *lba_list;
 	u64 data_start, data_end;
 	u64 nr_valid_lbas, nr_lbas = 0;
-	u64 i;
+	u64 i, ti;
 	struct ppa_addr ppa;
 	int pos;
 	int j;
@@ -282,7 +282,8 @@ static int pblk_recov_l2p_from_emeta_group(struct pblk *pblk, struct pblk_line *
 	}
 
 	stripe_id = 0;
-	for (i = data_start; i < data_end; i++) {
+	for (i = data_start; i < data_end;) {
+		ti = i + pblk->min_write_pgs;
 		for (j = 0; j < rec_nr_line; j++) {
 			line = lines[j];
 			dev_id = line->dev_id;
@@ -301,34 +302,37 @@ static int pblk_recov_l2p_from_emeta_group(struct pblk *pblk, struct pblk_line *
 				map_id = lines[stripe_id]->dev_id;
 			}
 
-			ppa = addr_to_gen_ppa(pblk, i, line->id);
-			ppa = pblk_set_ppa_dev_id(ppa, map_id);
-			pos = pblk_ppa_to_pos(geo, ppa);
+			for (i = ti - pblk->min_write_pgs; i < ti; i++) {
+				ppa = addr_to_gen_ppa(pblk, i, line->id);
+				ppa = pblk_set_ppa_dev_id(ppa, map_id);
+				pos = pblk_ppa_to_pos(geo, ppa);
 
-			/* Do not update bad blocks */
-			if (test_bit(pos, line->blk_bitmap))
-				continue;
+				/* Do not update bad blocks */
+				if (test_bit(pos, line->blk_bitmap))
+					continue;
 
-			if (le64_to_cpu(lba_list[i]) == ADDR_EMPTY) {
-				spin_lock(&line->lock);
-				if (test_and_set_bit(i, line->invalid_bitmap))
-					WARN_ONCE(1, "pblk: rec. double invalidate:\n");
-				else
-					le32_add_cpu(line->vsc, -1);
-				spin_unlock(&line->lock);
+				if (le64_to_cpu(lba_list[i]) == ADDR_EMPTY) {
+					spin_lock(&line->lock);
+					if (test_and_set_bit(i, line->invalid_bitmap))
+						WARN_ONCE(1, "pblk: rec. double invalidate:\n");
+					else
+						le32_add_cpu(line->vsc, -1);
+					spin_unlock(&line->lock);
 
-				continue;
-			}
-			
-			nr_lba[dev_id]++;
-			pblk_update_map(pblk, le64_to_cpu(lba_list[i]), ppa);
-			/*
-			pr_info("pblk: %s: lba %llu in line %d of dev %d\n",
-					__func__, le64_to_cpu(lba_list[i]), line->id, dev_id);
+					continue;
+				}
+
+				nr_lba[dev_id]++;
+				pblk_update_map(pblk, le64_to_cpu(lba_list[i]), ppa);
+				/*
+				pr_info("pblk: %s: lba %llu in line %d of dev %d\n",
+						__func__, le64_to_cpu(lba_list[i]), line->id, dev_id);
 					*/
+			}
 		}
 		if (pblk_is_raid1(pblk))
 			stripe_id = (stripe_id + 1) % rec_nr_line;
+		i = ti;
 	}
 
 	for (i = 0; i < rec_nr_line; i++) {
@@ -1925,7 +1929,11 @@ int pblk_recov_l2p(struct pblk  *pblk)
 			//return pblk_recov_l2p_raid1(pblk);
 			return -1;
 		case PBLK_RAID5:
-			return pblk_recov_l2p_raid5(pblk);
+			pr_err("pblk: %s: md_mode %d not ok: recover granularity is pblk->min_write_pgs\n",
+					__func__, pblk->md_mode);
+			return -1;
+			//
+			//return pblk_recov_l2p_raid5(pblk);
 		default:
 			pr_err("pblk: %s: %d not supported now\n", __func__, pblk->md_mode);
 			return -1;
