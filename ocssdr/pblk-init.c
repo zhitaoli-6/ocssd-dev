@@ -56,11 +56,9 @@ static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
 {
 	struct pblk *pblk = q->queuedata;
 
-	/*
 	pr_info("nvm: %s: op %u, bi_sector %8lu, size %8u, partno %u\n", 
 			pblk->disk->disk_name, bio_op(bio), bio->bi_iter.bi_sector, 
 			bio_sectors(bio), bio->bi_partno);
-			*/
 	if (bio_op(bio) == REQ_OP_DISCARD) {
 		pblk_discard(pblk, bio);
 		if (!(bio->bi_opf & REQ_PREFLUSH)) {
@@ -740,7 +738,8 @@ static void pblk_set_provision(struct pblk *pblk, long nr_free_blks)
 	sec_meta = (lm->smeta_sec + lm->emeta_sec[0]) * pblk->nr_free_lines;
 	blk_meta = DIV_ROUND_UP(sec_meta, geo->clba);
 
-	pblk->capacity = (provisioned - blk_meta) * geo->clba;
+	//pblk->capacity = (provisioned - blk_meta) * geo->clba;
+	pblk->capacity = 1024 * 1024;
 
 	atomic_set(&pblk->rl.free_blocks, nr_free_blks);
 	atomic_set(&pblk->rl.free_user_blocks, nr_free_blks);

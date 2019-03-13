@@ -1303,6 +1303,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		bio_endio(bio);
 		atomic_inc(&pblk->inflight_io);
 		__pblk_end_io_read(pblk, rqd, false);
+		kfree(md_r_ctx);
 		return NVM_IO_OK;
 	}
 	struct nvm_rq *ret_rqd;

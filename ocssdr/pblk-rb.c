@@ -439,10 +439,14 @@ static int pblk_rb_may_write_flush(struct pblk_rb *rb, unsigned int nr_entries,
 
 	if (bio->bi_opf & REQ_PREFLUSH) {
 		struct pblk *pblk = container_of(rb, struct pblk, rwb);
+		pr_info("nvm: %s: op %u, bi_sector %8lu, size %8u, FLUSH, mem %u\n", 
+				pblk->disk->disk_name, bio_op(bio), bio->bi_iter.bi_sector, 
+				bio_sectors(bio), mem);
 
 		atomic64_inc(&pblk->nr_flush);
 		if (pblk_rb_flush_point_set(&pblk->rwb, bio, mem))
 			*io_ret = NVM_IO_OK;
+		
 	}
 
 	/* Protect from read count */
