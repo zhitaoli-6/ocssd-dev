@@ -81,6 +81,7 @@ retry:
 			meta_list[meta_list_idx].lba[3] = cpu_to_le64(ADDR_EMPTY); //modify by kan
 #endif
 
+			memset(bio_data(bio), 0, PBLK_EXPOSED_PAGE_SIZE);
 			if (unlikely(!advanced_bio)) {
 				bio_advance(bio, (i) * PBLK_EXPOSED_PAGE_SIZE);
 				advanced_bio = true;
