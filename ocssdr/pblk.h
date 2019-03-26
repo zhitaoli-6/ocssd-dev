@@ -64,6 +64,9 @@
 #define KMALLOC_PARITY
 #define ATOMIC_STRIPE
 
+/*BLK DEV SIZE in 4KB*/
+#define BLK_DEV_SIZE (1ull*1024*1024)
+
 //#define P2L_CLEAN
 //
 //#define META_READ
@@ -709,6 +712,8 @@ enum {
 };
 
 struct pblk {
+	void *data; // debug: write into mem, never flush
+
 	struct nvm_tgt_dev **devs;
 	int nr_dev;
 	struct gendisk *disk;

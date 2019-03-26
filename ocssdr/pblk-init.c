@@ -52,13 +52,46 @@ static int pblk_rw_io(struct request_queue *q, struct pblk *pblk,
 	return pblk_write_to_cache(pblk, bio, PBLK_IOTYPE_USER);
 }
 
+static void mem_xfer(void *data, unsigned long sector,
+		unsigned long bytes, void *buf, unsigned int op)
+{
+	unsigned long offset = sector * PAGE_SIZE;
+	if (offset + bytes > BLK_DEV_SIZE * PAGE_SIZE) {
+		pr_err("%s: out of regin write\n", __func__);
+		return;
+	}
+	if (op_is_write(op)) {
+		memcpy(data+offset, buf, bytes);
+	} else {
+		memcpy(buf, data+offset, bytes);
+	}
+}
+
 static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
 {
 	struct pblk *pblk = q->queuedata;
+	struct bvec_iter iter;
+	struct bio_vec bvec;
+	unsigned long sec;
+	void *buf;
+	unsigned long off;
 
 	pr_info("nvm: %s: op %u, bi_sector %8lu, size %8u, partno %u\n", 
 			pblk->disk->disk_name, bio_op(bio), bio->bi_iter.bi_sector, 
 			bio_sectors(bio), bio->bi_partno);
+	
+	if (bio_has_data(bio)) {
+		bio_for_each_segment(bvec, bio, iter) {
+			sec = iter.bi_sector / NR_PHY_IN_LOG;
+			buf = kmap_atomic(bvec.bv_page);
+			off = bvec.bv_offset;
+			mem_xfer(pblk->data, sec, bvec.bv_len, buf+off, bio_op(bio));
+			kunmap_atomic(buf);
+		}
+	}
+	
+	bio_endio(bio);
+	/*
 	if (bio_op(bio) == REQ_OP_DISCARD) {
 		pblk_discard(pblk, bio);
 		if (!(bio->bi_opf & REQ_PREFLUSH)) {
@@ -75,7 +108,7 @@ static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
 		bio_endio(bio);
 		break;
 	}
-
+	*/
 	return BLK_QC_T_NONE;
 }
 
@@ -504,6 +537,9 @@ fail_free_pad_dist:
 
 static void pblk_core_free(struct pblk *pblk)
 {
+	if (pblk->data)
+		vfree(pblk->data);
+
 	if (pblk->close_wq)
 		destroy_workqueue(pblk->close_wq);
 
@@ -739,7 +775,7 @@ static void pblk_set_provision(struct pblk *pblk, long nr_free_blks)
 	blk_meta = DIV_ROUND_UP(sec_meta, geo->clba);
 
 	//pblk->capacity = (provisioned - blk_meta) * geo->clba;
-	pblk->capacity = 1024 * 1024;
+	pblk->capacity = BLK_DEV_SIZE;
 
 	atomic_set(&pblk->rl.free_blocks, nr_free_blks);
 	atomic_set(&pblk->rl.free_user_blocks, nr_free_blks);
@@ -1419,6 +1455,12 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	atomic_long_set(&pblk->read_failed_gc, 0);
 	atomic_long_set(&pblk->write_failed, 0);
 	atomic_long_set(&pblk->erase_failed, 0);
+
+	pblk->data = vmalloc(BLK_DEV_SIZE * PAGE_SIZE);
+	if (!pblk->data) {
+		pr_err("pblk: could not alloc mem buf\n");
+		goto fail;
+	}
 
 	//pr_info("pblk: start pblk_core_init\n");
 	ret = pblk_core_init(pblk);

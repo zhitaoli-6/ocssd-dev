@@ -28,12 +28,12 @@ static int sbull_major = 0;
 module_param(sbull_major, int, 0);
 static int hardsect_size = 512;
 module_param(hardsect_size, int, 0);
-static int nsectors = 1024*128;	/* How big the drive is */
+static int nsectors = 1024*1024;	/* How big the drive is */
 module_param(nsectors, int, 0);
-static int ndevices = 2;
+static int ndevices = 4;
 module_param(ndevices, int, 0);
 
-static int RAID0 = 1;
+static int RAID0 = 0;
 module_param(RAID0, int, 0);
 
 #define CHUNK_BITS (3)
@@ -42,8 +42,6 @@ module_param(RAID0, int, 0);
 
 
 static struct bio_set *sbull_bio_set = NULL;
-
-
 /*
  * The different "request modes" we can use.
  */
@@ -427,7 +425,7 @@ static void setup_device(struct sbull_dev *dev, int which)
 			goto out_vfree;
 		break;
 	}
-	blk_queue_logical_block_size(dev->queue, hardsect_size);
+	blk_queue_logical_block_size(dev->queue, PAGE_SIZE);
 	dev->queue->queuedata = dev;
 	/*
 	 * And the gendisk structure.
@@ -500,22 +498,16 @@ static void setup_md_device(struct sbull_dev *child_devs, int devcnt)
 	printk(KERN_NOTICE "setup md RAID0 PASS\n");
 }
 
-
-
 static int __init sbull_init(void)
 {
 	int i;
-	/*
-	 * Get registered.
-	 */
+	printk(KERN_INFO "sbull: begin init module\n");
 	sbull_major = register_blkdev(sbull_major, "sbull");
 	if (sbull_major <= 0) {
 		printk(KERN_WARNING "sbull: unable to get major number\n");
 		return -EBUSY;
 	}
-	/*
-	 * Allocate the device array, and initialize each one.
-	 */
+	// Allocate the device array, and initialize each one.
 	Devices = kmalloc(ndevices*sizeof (struct sbull_dev), GFP_KERNEL);
 	if (Devices == NULL)
 		goto out_unregister;
@@ -528,13 +520,13 @@ static int __init sbull_init(void)
 			unregister_blkdev(sbull_major, "sbull");
 			return -EINVAL;
 		}
+		sbull_bio_set = bioset_create(BIO_POOL_SIZE, 0, 0);
 		setup_md_device(Devices, ndevices);
 	}
-	sbull_bio_set = bioset_create(BIO_POOL_SIZE, 0, 0);
     
 	return 0;
 
-  out_unregister:
+out_unregister:
 	unregister_blkdev(sbull_major, "sbull");
 	return -ENOMEM;
 }
@@ -542,6 +534,7 @@ static int __init sbull_init(void)
 static void sbull_exit(void)
 {	
 	int i;
+	printk(KERN_INFO "sbull: begin exit module\n");
 	if(RAID0){
 		if(md_dev->gd){
 			del_gendisk(md_dev->gd);
@@ -551,6 +544,7 @@ static void sbull_exit(void)
 			blk_cleanup_queue(md_dev->queue);
 		}
 		if(md_dev) kfree(md_dev);
+		if(sbull_bio_set) bioset_free(sbull_bio_set);
 	}
 
 	if(Devices){
@@ -558,23 +552,14 @@ static void sbull_exit(void)
 			struct sbull_dev *dev = Devices + i;
 
 			//del_timer_sync(&dev->timer);
-			if (dev->gd) {
-				del_gendisk(dev->gd);
-				put_disk(dev->gd);
-			}
-			if (dev->queue) {
-				if (request_mode == RM_NOQUEUE)
-					kobject_put (&dev->queue->kobj);
-				else
-					blk_cleanup_queue(dev->queue);
-			}
-			if (dev->data)
-				vfree(dev->data);
+			del_gendisk(dev->gd);
+			put_disk(dev->gd);
+			blk_cleanup_queue(dev->queue);
+			vfree(dev->data);
 		}
 
 		kfree(Devices);
 	}
-	if(sbull_bio_set) bioset_free(sbull_bio_set);
 	unregister_blkdev(sbull_major, "sbull");
 }
 	
