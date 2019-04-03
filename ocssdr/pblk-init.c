@@ -49,7 +49,12 @@ static int pblk_rw_io(struct request_queue *q, struct pblk *pblk,
 	if (pblk_get_secs(bio) > pblk_rl_max_io(&pblk->rl))
 		blk_queue_split(q, &bio);
 
-	return pblk_write_to_cache(pblk, bio, PBLK_IOTYPE_USER);
+	ret = pblk_write_to_cache(pblk, bio, PBLK_IOTYPE_USER);
+	//msleep(500);
+	if (ret != NVM_IO_OK && ret != NVM_IO_DONE) {
+		pr_info("%s: write to buffer fails\n", __func__);
+	}
+	return ret;
 }
 
 static void mem_xfer(void *data, unsigned long sector,
@@ -72,14 +77,17 @@ static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
 	struct pblk *pblk = q->queuedata;
 	struct bvec_iter iter;
 	struct bio_vec bvec;
+	int ret;
 	unsigned long sec;
 	void *buf;
 	unsigned long off;
 
-	pr_info("nvm: %s: op %u, bi_sector %8lu, size %8u, partno %u\n", 
-			pblk->disk->disk_name, bio_op(bio), bio->bi_iter.bi_sector, 
-			bio_sectors(bio), bio->bi_partno);
-	
+	/*
+	pr_info("nvm: %s: op %u, flush %u, bi_sector %8lu, size %8u, init_idx %d, begin\n",
+			pblk->disk->disk_name, bio_op(bio), (bio->bi_opf&REQ_PREFLUSH?1:0),
+			bio->bi_iter.bi_sector, bio_sectors(bio), pblk_get_bi_idx(bio));
+			*/
+#ifdef MEM_DATA
 	if (bio_has_data(bio)) {
 		bio_for_each_segment(bvec, bio, iter) {
 			sec = iter.bi_sector / NR_PHY_IN_LOG;
@@ -89,10 +97,10 @@ static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
 			kunmap_atomic(buf);
 		}
 	}
-	
 	bio_endio(bio);
-	/*
+#else
 	if (bio_op(bio) == REQ_OP_DISCARD) {
+		pr_info("nvm: %s: DISCARD\n", pblk->disk->disk_name);
 		pblk_discard(pblk, bio);
 		if (!(bio->bi_opf & REQ_PREFLUSH)) {
 			bio_endio(bio);
@@ -107,8 +115,24 @@ static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
 	case NVM_IO_DONE:
 		bio_endio(bio);
 		break;
+	case NVM_IO_OK:
+		break;
+	default:
+		pr_info("nvm: %s: unexpected return code\n", pblk->disk->disk_name);
 	}
-	*/
+	/*
+	if (bio_has_data(bio)) {
+		ret = pblk_rw_io(q, pblk, bio);
+		pr_info("nvm: %s: op %u, flush %u, bi_sector %8lu, size %8u, ret %d\n",
+				pblk->disk->disk_name, bio_op(bio), (bio->bi_opf&REQ_PREFLUSH?1:0),
+				bio->bi_iter.bi_sector, bio_sectors(bio), ret);
+		if (ret == NVM_IO_DONE) {
+			bio_endio(bio);
+		}
+	} else
+		bio_endio(bio);
+		*/
+#endif
 	return BLK_QC_T_NONE;
 }
 
@@ -425,7 +449,7 @@ static int pblk_core_init(struct pblk *pblk)
 	atomic64_set(&pblk->nr_flush, 0);
 	pblk->nr_flush_rst = 0;
 
-	pblk->pgs_in_buffer = geo->mw_cunits * geo->all_luns * pblk->nr_dev;
+	pblk->pgs_in_buffer = 8*geo->mw_cunits * geo->all_luns * pblk->nr_dev;
 
 	pblk->min_write_pgs = geo->ws_opt * (geo->csecs / PAGE_SIZE);
 	max_write_ppas = pblk->min_write_pgs * geo->all_luns * pblk->nr_dev;
@@ -1456,11 +1480,13 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	atomic_long_set(&pblk->write_failed, 0);
 	atomic_long_set(&pblk->erase_failed, 0);
 
+#ifdef MEM_DATA
 	pblk->data = vmalloc(BLK_DEV_SIZE * PAGE_SIZE);
 	if (!pblk->data) {
 		pr_err("pblk: could not alloc mem buf\n");
 		goto fail;
 	}
+#endif
 
 	//pr_info("pblk: start pblk_core_init\n");
 	ret = pblk_core_init(pblk);

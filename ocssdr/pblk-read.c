@@ -273,7 +273,7 @@ static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 		//pblk_fill_read_io((struct bio *)r_ctx->private, bio, rqd->nr_ppas);
 		pblk_end_user_read((struct bio *)r_ctx->private);
 	}
-	bio_put(bio);
+	//bio_put(bio);
 
 	if (put_line)
 		pblk_read_put_rqd_kref(pblk, rqd);
@@ -1299,7 +1299,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	}
 	md_r_ctx->read_bitmap = read_bitmap;
 
-	bio_get(bio);
+	//bio_get(bio);
 	if (bitmap_full(&read_bitmap, nr_secs)) {
 		bio_endio(bio);
 		atomic_inc(&pblk->inflight_io);

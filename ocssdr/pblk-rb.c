@@ -369,7 +369,7 @@ static int pblk_rb_flush_point_set(struct pblk_rb *rb, struct bio *bio,
 #endif
 
 	flush_point = (pos == 0) ? (rb->nr_entries - 1) : (pos - 1);
-	pr_info("pblk: %s, flush_point %u\n", __func__, flush_point);
+	//pr_info("pblk: %s, flush_point %u\n", __func__, flush_point);
 	entry = &rb->entries[flush_point];
 
 	/* Protect flush points */
@@ -430,6 +430,7 @@ static int pblk_rb_may_write_flush(struct pblk_rb *rb, unsigned int nr_entries,
 				   int *io_ret)
 {
 	unsigned int mem;
+	struct pblk *pblk = container_of(rb, struct pblk, rwb);
 
 	if (!__pblk_rb_may_write(rb, nr_entries, pos))
 		return 0;
@@ -437,16 +438,15 @@ static int pblk_rb_may_write_flush(struct pblk_rb *rb, unsigned int nr_entries,
 	mem = (*pos + nr_entries) & (rb->nr_entries - 1);
 	*io_ret = NVM_IO_DONE;
 
+	/*
+	pr_info("nvm: %s: op %u, bi_sector %8lu, size %8u, FLUSH, mem %u\n", 
+			pblk->disk->disk_name, bio_op(bio), bio->bi_iter.bi_sector, 
+			bio_sectors(bio), mem);
+			*/
 	if (bio->bi_opf & REQ_PREFLUSH) {
-		struct pblk *pblk = container_of(rb, struct pblk, rwb);
-		pr_info("nvm: %s: op %u, bi_sector %8lu, size %8u, FLUSH, mem %u\n", 
-				pblk->disk->disk_name, bio_op(bio), bio->bi_iter.bi_sector, 
-				bio_sectors(bio), mem);
-
 		atomic64_inc(&pblk->nr_flush);
 		if (pblk_rb_flush_point_set(&pblk->rwb, bio, mem))
 			*io_ret = NVM_IO_OK;
-		
 	}
 
 	/* Protect from read count */
