@@ -449,7 +449,7 @@ static int pblk_core_init(struct pblk *pblk)
 	atomic64_set(&pblk->nr_flush, 0);
 	pblk->nr_flush_rst = 0;
 
-	pblk->pgs_in_buffer = 8*geo->mw_cunits * geo->all_luns * pblk->nr_dev;
+	pblk->pgs_in_buffer = geo->mw_cunits * geo->all_luns * pblk->nr_dev;
 
 	pblk->min_write_pgs = geo->ws_opt * (geo->csecs / PAGE_SIZE);
 	max_write_ppas = pblk->min_write_pgs * geo->all_luns * pblk->nr_dev;
@@ -927,7 +927,7 @@ static long pblk_setup_line_meta(struct pblk *pblk, struct pblk_line *line,
 		nr_bad_chks = pblk_setup_line_meta_20(pblk, line, chunk_meta);
 
 	chk_in_line = lm->blk_per_line - nr_bad_chks;
-	if (nr_bad_chks < 0 || nr_bad_chks > lm->blk_per_line ||
+	if (line_id < 15 || nr_bad_chks < 0 || nr_bad_chks > lm->blk_per_line ||
 					chk_in_line < lm->min_blk_line) {
 		line->state = PBLK_LINESTATE_BAD;
 		list_add_tail(&line->list, &l_mg->bad_list);

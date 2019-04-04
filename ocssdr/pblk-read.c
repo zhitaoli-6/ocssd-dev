@@ -343,7 +343,7 @@ static void __pblk_end_io_read_md(struct pblk *pblk, struct pblk_md_read_ctx *md
 			/*
 			pr_info("pblk: %s copy md_bio page_no %d from child_bio page_no %d\n",
 					__func__, offset[dev_id], bio_init_idx+i);
-				*/
+					*/
 
 			kunmap_atomic(src_p);
 			kunmap_atomic(dst_p);
@@ -354,7 +354,7 @@ free_offset:
 		kfree(offset);
 out:
 		bio_endio(md_bio);
-		bio_put(md_bio);
+		//bio_put(md_bio);
 		for (dev_id = 0; dev_id < NVM_MD_MAX_DEV_CNT; dev_id++) {
 			child_bio = md_r_ctx->bio[dev_id];
 			if (child_bio) {

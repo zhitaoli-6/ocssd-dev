@@ -30,7 +30,6 @@
 #include <linux/dma-mapping.h>
 #include <linux/rbtree.h>
 
-#include <linux/delay.h>
 #include <linux/lightnvm.h>
 #include "nvme.h"
 
@@ -66,7 +65,7 @@
 #define ATOMIC_STRIPE
 
 //#define MEM_DATA
-#define BLK_DEV_SIZE (1ull*1024)  /*BLK DEV SIZE in 4KB*/
+#define BLK_DEV_SIZE (1ull*1024*1024)  /*BLK DEV SIZE in 4KB*/
 
 //#define P2L_CLEAN
 //
