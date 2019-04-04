@@ -501,7 +501,8 @@ void pblk_log_read_err(struct pblk *pblk, struct nvm_rq *rqd)
 		break;
 	default:
 		dev_id = pblk_get_rq_dev_id(pblk, rqd);
-		pr_err("pblk: unknown read error:%d, dev_id %d\n", rqd->error, dev_id);
+		pr_err("nvm: %s: pblk: unknown read error:%d, dev_id %d\n",
+				pblk->disk->disk_name, rqd->error, dev_id);
 	}
 #ifdef CONFIG_NVM_DEBUG
 	pblk_print_failed_rqd(pblk, rqd, rqd->error);
