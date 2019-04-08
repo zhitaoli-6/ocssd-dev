@@ -22,6 +22,8 @@ int inject_line_err(struct pblk *pblk)
 	int i;
 
 	//pr_info("pblk: %s: do nothing now\n", __func__);
+	//
+	return 0;
 
 	for (i = 0; i < nr_injected; i++) {
 		err_dev_id = err_devs[i];

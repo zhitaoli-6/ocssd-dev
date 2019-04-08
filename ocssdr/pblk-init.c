@@ -118,9 +118,11 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 
 	if (factory_init) {
 		pblk->stripe_size = pblk->nr_dev;
+		/*
 		if (pblk_is_raid5(pblk)) {
 			pblk->stripe_size = 3;
 		}
+		*/
 		pblk_setup_uuid(pblk);
 	} else {
 		pr_err("pblk: %s: begin recover l2p\n", __func__);
@@ -762,7 +764,8 @@ static void pblk_set_provision(struct pblk *pblk, long nr_free_blks)
 	sec_meta = (lm->smeta_sec + lm->emeta_sec[0]) * pblk->nr_free_lines;
 	blk_meta = DIV_ROUND_UP(sec_meta, geo->clba);
 
-	pblk->capacity = (provisioned - blk_meta) * geo->clba;
+	//pblk->capacity = (provisioned - blk_meta) * geo->clba;
+	pblk->capacity = BLK_DEV_SIZE;
 
 	atomic_set(&pblk->rl.free_blocks, nr_free_blks);
 	atomic_set(&pblk->rl.free_user_blocks, nr_free_blks);
@@ -890,7 +893,7 @@ static long pblk_setup_line_meta(struct pblk *pblk, struct pblk_line *line,
 		nr_bad_chks = pblk_setup_line_meta_20(pblk, line, chunk_meta);
 
 	chk_in_line = lm->blk_per_line - nr_bad_chks;
-	if (nr_bad_chks < 0 || nr_bad_chks > lm->blk_per_line ||
+	if (line_id < 15 || nr_bad_chks < 0 || nr_bad_chks > lm->blk_per_line ||
 					chk_in_line < lm->min_blk_line) {
 		line->state = PBLK_LINESTATE_BAD;
 		list_add_tail(&line->list, &l_mg->bad_list);
@@ -1355,8 +1358,10 @@ static void pblk_exit(void *private)
 	struct pblk *pblk = private;
 
 	down_write(&pblk_lock);
+#ifdef LINE_ERR_REC
 	pr_info("pblk: err_rec kthread exit...\n");
 	pblk_err_rec_exit(pblk);
+#endif
 	pr_info("pblk: gc exit...\n");
 	pblk_gc_exit(pblk);
 	pr_info("pblk: tear down...\n");
@@ -1510,12 +1515,13 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	// capacity bug
 	//pblk_set_capacity(pblk);
 	// here we test linux kthread: err-rec
+#ifdef LINE_ERR_REC
 	ret = pblk_err_rec_init(pblk);
 	if (ret) {
 		pr_info("pblk: %s: err_rec init ret %d\n", __func__, ret);
 		goto fail_free_l2p;
 	}
-
+#endif
 	ret = pblk_writer_init(pblk);
 	if (ret) {
 		if (ret != -EINTR)

@@ -114,10 +114,6 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 		return;
 	}
 
-#ifdef CONFIG_NVM_DEBUG
-	atomic_long_sub(c_ctx->nr_valid, &pblk->inflight_writes);
-#endif
-
 	//pr_info("pblk: %s callback\n", __func__);
 	pblk_up_rq(pblk, rqd->ppa_list, rqd->nr_ppas, c_ctx->lun_bitmap, dev_id);
 	
@@ -870,6 +866,9 @@ static int pblk_submit_raid5_write(struct pblk *pblk, unsigned long pos,
 		c_ctx->cpl->parity = buf;
 		//spin_unlock(&c_ctx->cpl->lock);
 
+#ifdef CONFIG_NVM_DEBUG
+			atomic_long_add(pblk->min_write_pgs, &pblk->sub_writes);
+#endif
 		if (pblk_submit_io_set(pblk, rqd, dev_id))
 			goto fail_free_bio;
 
