@@ -28,7 +28,7 @@ static int sbull_major = 0;
 module_param(sbull_major, int, 0);
 static int hardsect_size = 512;
 module_param(hardsect_size, int, 0);
-static int nsectors = 1024*1024;	/* How big the drive is */
+static int nsectors = 1024*1024*8;	/* How big the drive is */
 module_param(nsectors, int, 0);
 static int ndevices = 4;
 module_param(ndevices, int, 0);
@@ -75,7 +75,7 @@ module_param(request_mode, int, 0);
  * The internal representation of our device.
  */
 struct sbull_dev {
-        int size;                       /* Device size in sectors */
+        u64 size;                       /* Device size in sectors */
         u8 *data;                       /* The data array */
         short users;                    /* How many users */
         short media_change;             /* Flag a media change? */
@@ -205,7 +205,8 @@ static blk_qc_t sbull_make_request(struct request_queue *q, struct bio *bio)
 {
 	struct sbull_dev *dev = bio->bi_disk->private_data;
 	int status;
-	printk(KERN_NOTICE "sbull: %s: op %s, lba %10lu, size %10u, partno %u\n", bio->bi_disk->disk_name, (bio_data_dir(bio) == WRITE?"write":"read"), bio->bi_iter.bi_sector, bio_sectors(bio), bio->bi_partno);
+	
+	//printk(KERN_NOTICE "sbull: %s: op %s, lba %10lu, size %10u, partno %u\n", bio->bi_disk->disk_name, (bio_data_dir(bio) == WRITE?"write":"read"), bio->bi_iter.bi_sector, bio_sectors(bio), bio->bi_partno);
 
 	status = sbull_xfer_bio(dev, bio);
 	bio_endio(bio);
@@ -380,7 +381,7 @@ static void setup_device(struct sbull_dev *dev, int which)
 	 * Get some memory.
 	 */
 	memset (dev, 0, sizeof (struct sbull_dev));
-	dev->size = nsectors*hardsect_size;
+	dev->size = 1ll*nsectors*hardsect_size;
 	dev->data = vmalloc(dev->size);
 	if (dev->data == NULL) {
 		printk (KERN_NOTICE "vmalloc failure.\n");
@@ -441,7 +442,7 @@ static void setup_device(struct sbull_dev *dev, int which)
 	dev->gd->queue = dev->queue;
 	dev->gd->private_data = dev;
 	snprintf (dev->gd->disk_name, 32, "sbull%c", which + 'a');
-	set_capacity(dev->gd, nsectors*(hardsect_size/KERNEL_SECTOR_SIZE));
+	set_capacity(dev->gd, 1ll*nsectors*(hardsect_size/KERNEL_SECTOR_SIZE));
 	add_disk(dev->gd);
 	return;
 
@@ -555,7 +556,8 @@ static void sbull_exit(void)
 			del_gendisk(dev->gd);
 			put_disk(dev->gd);
 			blk_cleanup_queue(dev->queue);
-			vfree(dev->data);
+			if(dev->data)
+				vfree(dev->data);
 		}
 
 		kfree(Devices);
