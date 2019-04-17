@@ -27,13 +27,7 @@
 #define PAGE_SECTORS_SHIFT	(PAGE_SHIFT - SECTOR_SHIFT)
 #define PAGE_SECTORS		(1 << PAGE_SECTORS_SHIFT)
 
-static unsigned long read_nr = 0;
-static unsigned long last_print_read = 0;
-unsigned long print_read_step = 1024;
-
-static unsigned long write_nr = 0;
-static unsigned long last_print_write = 0;
-unsigned long print_write_step = 1024;
+#define PRINT_STEP (1024*256)
 
 /*
  * Each block ramdisk device has a radix_tree brd_pages of pages that stores
@@ -55,6 +49,17 @@ struct brd_device {
 	 */
 	spinlock_t		brd_lock;
 	struct radix_tree_root	brd_pages;
+
+	/*
+	 * Private info: read/write io count
+	 */
+	unsigned long read_nr;
+	unsigned long last_print_read;
+	unsigned long print_read_step;
+
+	unsigned long write_nr;
+	unsigned long last_print_write;
+	unsigned long print_write_step;
 };
 
 /*
@@ -296,28 +301,28 @@ static blk_qc_t brd_make_request(struct request_queue *q, struct bio *bio)
 	struct bvec_iter iter;
 
 	if (bio_data_dir(bio) == WRITE) {
-		write_nr += bio_sectors(bio);
-		if (write_nr >= last_print_write + print_write_step) {
-			printk(KERN_NOTICE "my-brd %s: write sectors %lu\n",
-					bio->bi_disk->disk_name, write_nr);
+		brd->write_nr += bio_sectors(bio);
+		if (brd->write_nr >= brd->last_print_write + brd->print_write_step) {
+			printk(KERN_NOTICE "my-brd %s: W:  %lu\t%lu\n",
+					bio->bi_disk->disk_name, brd->read_nr, brd->write_nr);
 			/*
 			printk(KERN_NOTICE "sbull: %s: op %s, lba %10lu, size %10u, partno %u\n",
 					bio->bi_disk->disk_name, (bio_data_dir(bio) == WRITE?"write":"read"),
 					bio->bi_iter.bi_sector, bio_sectors(bio), bio->bi_partno);
 					*/
-			last_print_write += print_write_step;
+			brd->last_print_write += brd->print_write_step;
 		}
 	} else {
-		read_nr += bio_sectors(bio);
-		if (read_nr >= last_print_read + print_read_step) {
-			printk(KERN_NOTICE "my-brd %s: read sectors %lu\n",
-					bio->bi_disk->disk_name, read_nr);
+		brd->read_nr += bio_sectors(bio);
+		if (brd->read_nr >= brd->last_print_read + brd->print_read_step) {
+			printk(KERN_NOTICE "my-brd %s: R:  %lu\t%lu\n",
+					bio->bi_disk->disk_name, brd->read_nr, brd->write_nr);
 			/*
 			printk(KERN_NOTICE "sbull: %s: op %s, lba %10lu, size %10u, partno %u\n",
 					bio->bi_disk->disk_name, (bio_data_dir(bio) == WRITE?"write":"read"),
 					bio->bi_iter.bi_sector, bio_sectors(bio), bio->bi_partno);
 					*/
-			last_print_read += print_read_step;
+			brd->last_print_read += brd->print_read_step;
 		}
 	}
 
@@ -369,7 +374,7 @@ module_param(rd_nr, int, S_IRUGO);
 MODULE_PARM_DESC(rd_nr, "Maximum number of brd devices");
 
 //unsigned long rd_size = CONFIG_BLK_DEV_RAM_SIZE;
-unsigned long rd_size = 1024*1024;
+unsigned long rd_size = 1024*1024*4;
 module_param(rd_size, ulong, S_IRUGO);
 MODULE_PARM_DESC(rd_size, "Size of each RAM disk in kbytes.");
 
@@ -407,6 +412,8 @@ static struct brd_device *brd_alloc(int i)
 	if (!brd)
 		goto out;
 	brd->brd_number		= i;
+	brd->print_read_step = PRINT_STEP;
+	brd->print_write_step = PRINT_STEP;
 	spin_lock_init(&brd->brd_lock);
 	INIT_RADIX_TREE(&brd->brd_pages, GFP_ATOMIC);
 
