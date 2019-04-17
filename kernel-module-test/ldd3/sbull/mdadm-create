@@ -1,0 +1,1 @@
+mdadm --create /dev/md/raid /dev/sbulla /dev/sbullb /dev/sbullc /dev/sbulld --level=5 --raid-devices=4
