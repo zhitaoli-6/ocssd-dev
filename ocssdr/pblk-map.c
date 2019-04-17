@@ -334,9 +334,7 @@ static void pblk_map_prepare_rqd_raid0(struct pblk *pblk, struct pblk_line *line
 
 	lba_list[paddr] = cpu_to_le64(w_ctx->lba);
 	if (lba_list[paddr] != addr_empty) {
-#ifdef P2L_CLEAN
 		//pblk_clean_group_lba_raid0(pblk, dev_id, paddr, w_ctx->lba);
-#endif
 		line->nr_valid_lbas++;
 	}
 	else
@@ -386,9 +384,7 @@ static void pblk_map_prepare_rqd_raid5(struct pblk *pblk, struct pblk_line *line
 	lba_list[paddr] = cpu_to_le64(lba);
 
 	if (!pblk_id_is_parity(pblk, c_ctx->md_id)) {
-#ifdef P2L_CLEAN
 		//pblk_clean_group_lba_raid5(pblk, dev_id, paddr, lba);
-#endif
 		if (lba_list[paddr] != addr_empty) {
 			line->nr_valid_lbas++;
 		} else

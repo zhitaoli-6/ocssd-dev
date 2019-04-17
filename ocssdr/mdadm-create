@@ -1,2 +1,2 @@
-mdadm --create /dev/md/raid /dev/pblk_sd1 /dev/pblk_sd2 /dev/pblk_sd3 --level=5 --raid-devices=3
+mdadm --create /dev/md/raid /dev/pblk_sd1 /dev/pblk_sd2 /dev/pblk_sd3 /dev/pblk_sd4 --level=5 --raid-devices=4
 #mdadm --create /dev/md/raid /dev/pblk_sd1 /dev/pblk_sd2 --level=1 --raid-devices=2

@@ -1,3 +1,8 @@
+/*
+ * RB operations are not in need and deprecated
+ */
+
+
 #include "pblk.h"
 
 // RB tree func cores

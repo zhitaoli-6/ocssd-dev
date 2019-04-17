@@ -164,38 +164,36 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 				return -EFAULT;
 			}
 		}
-		// choose first stripe: first nr_unit devs
-		ret = pblk_schedule_line_group(pblk, gid, set->rec_bitmap, dev_buf, group->nr_unit);
-		if (ret) {
-			pr_err("pblk: %s: schedule_line_group fail\n", __func__);
-			return -EFAULT;
-		}
-		for (i = 0; i < group->nr_unit; i++) {
-			dev_id = dev_buf[i];
-			line = pblk_line_get_data(pblk, dev_id);
-			group->line_units[i].dev_id = dev_id;
-			group->line_units[i].line_id = line->id;
-		}
 
-		// line emeta
-		for (i = 0; i < group->nr_unit; i++) {
-			dev_id = dev_buf[i];
-			line = pblk_line_get_data(pblk, dev_id);
-			pblk_line_setup_emeta_md(pblk, line);
-			pr_info("pblk: first stripe dev %d line %d seq_nr %d,%d\n",
-					dev_id, line->id, line->seq_nr, line->g_seq_nr);
+		if (pblk_is_raid1or5(pblk)) {
+			// choose first stripe: first nr_unit devs
+			ret = pblk_schedule_line_group(pblk, gid, set->rec_bitmap, dev_buf, group->nr_unit);
+			if (ret) {
+				pr_err("pblk: %s: schedule_line_group fail\n", __func__);
+				return -EFAULT;
+			}
+			for (i = 0; i < group->nr_unit; i++) {
+				dev_id = dev_buf[i];
+				line = pblk_line_get_data(pblk, dev_id);
+				group->line_units[i].dev_id = dev_id;
+				group->line_units[i].line_id = line->id;
+			}
+
+			// line emeta
+			for (i = 0; i < group->nr_unit; i++) {
+				dev_id = dev_buf[i];
+				line = pblk_line_get_data(pblk, dev_id);
+				pblk_line_setup_emeta_md(pblk, line);
+				pr_info("pblk: first stripe dev %d line %d seq_nr %d,%d\n",
+						dev_id, line->id, line->seq_nr, line->g_seq_nr);
+			}
+
+			// cpl
+			set->cpl->nr_io = group->nr_unit;
+			bitmap_zero(&set->cpl->cpl_map, set->cpl->nr_io);
+			INIT_LIST_HEAD(&set->cpl->cpl_list);
+			spin_lock_init(&set->cpl->lock);
 		}
-
-		// cpl
-		set->cpl->nr_io = group->nr_unit;
-		bitmap_zero(&set->cpl->cpl_map, set->cpl->nr_io);
-		INIT_LIST_HEAD(&set->cpl->cpl_list);
-		spin_lock_init(&set->cpl->lock);
-
-		/* line_group l2p rb_tree
-		set->l2p_rb_root = RB_ROOT;
-		set->rb_size = 0;
-		*/
 	}
 
 	return 0;
@@ -1427,7 +1425,7 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	pblk->devs = devs;
 	pblk->nr_dev = nr_dev;
 
-	pblk->md_mode = PBLK_RAID5;
+	pblk->md_mode = PBLK_SD;
 	pblk->on_resize = (flags & PBLK_TARGET_RESIZE) && !(flags & NVM_TARGET_FACTORY);
 	pr_info("pblk: %s: on_resize %d\n", __func__, pblk->on_resize);
 

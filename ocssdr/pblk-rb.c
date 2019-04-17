@@ -369,7 +369,7 @@ static int pblk_rb_flush_point_set(struct pblk_rb *rb, struct bio *bio,
 #endif
 
 	flush_point = (pos == 0) ? (rb->nr_entries - 1) : (pos - 1);
-	pr_info("pblk: %s, flush_point %u\n", __func__, flush_point);
+	//pr_info("pblk: %s, flush_point %u\n", __func__, flush_point);
 	entry = &rb->entries[flush_point];
 
 	/* Protect flush points */

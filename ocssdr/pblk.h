@@ -67,11 +67,7 @@
 
 //#define LINE_ERR_REC
 
-#define BLK_DEV_SIZE (1ll*1024*1024*4)
-
-//#define P2L_CLEAN
-//
-//#define META_READ
+#define BLK_DEV_SIZE (1ll*1024*1024)
 
 enum {
 	// NVM_TARGET_FACTORY = 1 << 0, in file "uapi/linux/lightnvm.h"
