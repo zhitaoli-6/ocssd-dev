@@ -114,6 +114,12 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 		return;
 	}
 
+#ifdef CONFIG_NVM_DEBUG
+	if (pblk_is_sd(pblk)) {
+		atomic_long_sub(c_ctx->nr_valid, &pblk->inflight_writes);
+	}
+#endif
+
 	//pr_info("pblk: %s callback\n", __func__);
 	pblk_up_rq(pblk, rqd->ppa_list, rqd->nr_ppas, c_ctx->lun_bitmap, dev_id);
 	
@@ -565,7 +571,7 @@ static int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd, int dev_id)
 	struct ppa_addr erase_ppa;
 	struct pblk_line *meta_line;
 	int err;
-	struct pblk_c_ctx *c_ctx = nvm_rq_to_pdu(rqd);
+	//struct pblk_c_ctx *c_ctx = nvm_rq_to_pdu(rqd);
 
 	pblk_ppa_set_empty(&erase_ppa);
 

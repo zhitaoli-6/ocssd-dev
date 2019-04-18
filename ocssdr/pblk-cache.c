@@ -69,6 +69,9 @@ retry:
 	atomic64_add(nr_entries, &pblk->user_wa);
 
 #ifdef CONFIG_NVM_DEBUG
+	if (pblk_is_sd(pblk)) {
+		atomic_long_add(nr_entries, &pblk->inflight_writes);
+	}
 	atomic_long_add(nr_entries, &pblk->req_writes);
 #endif
 

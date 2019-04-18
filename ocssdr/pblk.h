@@ -57,7 +57,7 @@
 /* Static pool sizes */
 #define PBLK_GEN_WS_POOL_SIZE (2)
 
-#define PBLK_DEFAULT_OP (21)
+#define PBLK_DEFAULT_OP (60)
 
 #define DEFAULT_DEV_ID (0)
 #define ERR_DEV_ID (0)
@@ -66,6 +66,7 @@
 #define ATOMIC_STRIPE
 
 //#define LINE_ERR_REC
+#define GC_ENABLE
 
 #define BLK_DEV_SIZE (1ll*1024*1024)
 

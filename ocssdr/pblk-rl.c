@@ -204,7 +204,8 @@ void pblk_rl_init(struct pblk_rl *rl, int budget)
 	sec_meta = (lm->smeta_sec + lm->emeta_sec[0]) * pblk->nr_free_lines;
 	blk_meta = DIV_ROUND_UP(sec_meta, geo->clba);
 
-	rl->high = pblk->op_blks - blk_meta - lm->blk_per_line * pblk->nr_dev;
+	//rl->high = pblk->op_blks - blk_meta - lm->blk_per_line * pblk->nr_dev;
+	rl->high = pblk->op_blks;
 	rl->high_pw = get_count_order(rl->high);
     
     printk("pblk: rl->high = %d rl->high_pw=%d\n", rl->high, rl->high_pw); //add by kan for debug 

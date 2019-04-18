@@ -1437,7 +1437,8 @@ out:
 
 int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq)
 {
-	int dev_id = DEFAULT_DEV_ID;
+	struct pblk_line *line = gc_rq->line;
+	int dev_id = line->dev_id;
 	struct nvm_tgt_dev *dev = pblk->devs[dev_id];
 	struct nvm_geo *geo = &dev->geo;
 	struct bio *bio;
@@ -1445,7 +1446,7 @@ int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq)
 	int data_len;
 	int ret = NVM_IO_OK;
 
-	pr_err("pblk: pblk-read.c %s called here\n", __func__);
+	//pr_err("pblk: %s called here\n", __func__);
 
 	memset(&rqd, 0, sizeof(struct nvm_rq));
 
@@ -1489,6 +1490,7 @@ int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq)
 	bio->bi_iter.bi_sector = 0; /* internal bio */
 	bio_set_op_attrs(bio, REQ_OP_READ, 0);
 
+	rqd.dev = dev;
 	rqd.opcode = NVM_OP_PREAD;
 	rqd.nr_ppas = gc_rq->secs_to_gc;
 	rqd.flags = pblk_set_read_mode(pblk, PBLK_READ_RANDOM);
@@ -1499,6 +1501,7 @@ int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq)
 		pr_err("pblk: GC read request failed\n");
 		goto err_free_bio;
 	}
+	//pr_info("pblk: %s: sync read %d sector SUC\n", __func__, gc_rq->secs_to_gc);
 
 	atomic_dec(&pblk->inflight_io);
 

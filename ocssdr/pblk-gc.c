@@ -341,9 +341,15 @@ static struct pblk_line *pblk_gc_get_victim_line(struct pblk *pblk,
 	int line_vsc, victim_vsc;
 
 	victim = list_first_entry(group_list, struct pblk_line, list);
+	victim_vsc = le32_to_cpu(*victim->vsc);
+
+	pr_info("pblk: %s: victim line %d: vsc %d\n",
+			__func__, victim->id, victim_vsc);
+
 	list_for_each_entry(line, group_list, list) {
 		line_vsc = le32_to_cpu(*line->vsc);
-		victim_vsc = le32_to_cpu(*victim->vsc);
+		pr_info("pblk: %s: line %d: vsc %d\n",
+				__func__, line->id, line_vsc);
 		if (line_vsc < victim_vsc)
 			victim = line;
 	}
@@ -416,14 +422,11 @@ static void pblk_gc_run(struct pblk *pblk)
 
 	pblk_gc_free_full_lines(pblk);
 
-	//pr_info("pblk gc: %s called here\n", __func__);
 
 	run_gc = pblk_gc_should_run(&pblk->gc, &pblk->rl);
 	if (!run_gc || (atomic_read(&gc->read_inflight_gc) >= PBLK_GC_L_QD))
 		return;
-
-	pr_err("pblk gc: gc should run while forbidden by zhitao\n");
-	return;
+	pr_info("pblk gc: %s: gc main thread run\n", __func__);
 
 next_gc_group:
 	group_list = l_mg->gc_lists[gc_group++];
@@ -445,6 +448,8 @@ next_gc_group:
 		list_del(&line->list);
 		spin_unlock(&l_mg->gc_lock);
 
+		pr_info("pblk gc: %s: gc victim line %d of dev %d, vsc %d\n",
+				__func__, line->dev_id, line->id, le32_to_cpu(*line->vsc));
 		spin_lock(&gc->r_lock);
 		list_add_tail(&line->list, &gc->r_list);
 		spin_unlock(&gc->r_lock);

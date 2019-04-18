@@ -762,8 +762,8 @@ static void pblk_set_provision(struct pblk *pblk, long nr_free_blks)
 	sec_meta = (lm->smeta_sec + lm->emeta_sec[0]) * pblk->nr_free_lines;
 	blk_meta = DIV_ROUND_UP(sec_meta, geo->clba);
 
-	//pblk->capacity = (provisioned - blk_meta) * geo->clba;
-	pblk->capacity = BLK_DEV_SIZE;
+	pblk->capacity = (provisioned - blk_meta) * geo->clba;
+	//pblk->capacity = BLK_DEV_SIZE;
 
 	atomic_set(&pblk->rl.free_blocks, nr_free_blks);
 	atomic_set(&pblk->rl.free_user_blocks, nr_free_blks);
@@ -885,17 +885,23 @@ static long pblk_setup_line_meta(struct pblk *pblk, struct pblk_line *line,
 	line->vsc = &l_mg->vsc_list[line_id];
 	spin_lock_init(&line->lock);
 
+	// manually disable other lines
+	if (line_id <= 15 || line_id > 20) {
+		line->state = PBLK_LINESTATE_BAD;
+		list_add_tail(&line->list, &l_mg->bad_list);
+		return 0;
+	}
+
 	if (geo->version == NVM_OCSSD_SPEC_12)
 		nr_bad_chks = pblk_setup_line_meta_12(pblk, line, chunk_meta);
 	else
 		nr_bad_chks = pblk_setup_line_meta_20(pblk, line, chunk_meta);
 
 	chk_in_line = lm->blk_per_line - nr_bad_chks;
-	if (line_id < 15 || nr_bad_chks < 0 || nr_bad_chks > lm->blk_per_line ||
+	if (nr_bad_chks < 0 || nr_bad_chks > lm->blk_per_line ||
 					chk_in_line < lm->min_blk_line) {
 		line->state = PBLK_LINESTATE_BAD;
 		list_add_tail(&line->list, &l_mg->bad_list);
-		//pr_info("nvm line: add line %d into bad_list; chk_in_line %ld\n", line_id, chk_in_line);
 		return 0;
 	}
 
@@ -1433,7 +1439,7 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	pblk->state = PBLK_STATE_RUNNING;
 
 	// useless here, will be reset in following pblk_gc_init
-	//pblk->gc.gc_enabled = 0;
+	pblk->gc.gc_enabled = 0;
 
 	spin_lock_init(&pblk->trans_lock);
 	spin_lock_init(&pblk->lock);
@@ -1510,10 +1516,8 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	}
 	pr_info("pblk: done pblk_l2p_init\n");
 
-	// capacity bug
-	//pblk_set_capacity(pblk);
-	// here we test linux kthread: err-rec
 #ifdef LINE_ERR_REC
+	// here we test linux kthread: err-rec
 	ret = pblk_err_rec_init(pblk);
 	if (ret) {
 		pr_info("pblk: %s: err_rec init ret %d\n", __func__, ret);
@@ -1528,12 +1532,14 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	}
 	pr_info("pblk: done pblk_writer_init\n");
 
+#ifdef GC_ENABLE
 	ret = pblk_gc_init(pblk);
 	if (ret) {
 		pr_err("pblk: could not initialize gc\n");
 		goto fail_stop_writer;
 	}
 	pr_info("pblk: done pblk_gc_init\n"); 
+#endif
 	/* inherit the size from the underlying device */
 	blk_queue_logical_block_size(tqueue, queue_physical_block_size(bqueue));
 	blk_queue_max_hw_sectors(tqueue, queue_max_hw_sectors(bqueue));
