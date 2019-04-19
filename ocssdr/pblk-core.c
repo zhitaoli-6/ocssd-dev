@@ -196,10 +196,11 @@ void __pblk_map_invalidate(struct pblk *pblk, struct pblk_line *line,
 		move_list = pblk_line_gc_list(pblk, line);
 	spin_unlock(&line->lock);
 
+	/*
 	if (move_list) {
 		spin_lock(&l_mg->gc_lock);
 		spin_lock(&line->lock);
-		/* Prevent moving a line that has just been chosen for GC */
+		// Prevent moving a line that has just been chosen for GC
 		if (line->state == PBLK_LINESTATE_GC) {
 			spin_unlock(&line->lock);
 			spin_unlock(&l_mg->gc_lock);
@@ -210,6 +211,7 @@ void __pblk_map_invalidate(struct pblk *pblk, struct pblk_line *line,
 		list_move_tail(&line->list, move_list);
 		spin_unlock(&l_mg->gc_lock);
 	}
+	*/
     //printk("exist %s\n", __func__);
 }
 
@@ -1709,7 +1711,7 @@ void pblk_line_free(struct pblk *pblk, struct pblk_line *line)
 	kfree(line->map_bitmap);
 	kfree(line->invalid_bitmap);
 
-	*line->vsc = cpu_to_le32(EMPTY_ENTRY);
+	//*line->vsc = cpu_to_le32(EMPTY_ENTRY);
 
 	line->map_bitmap = NULL;
 	line->invalid_bitmap = NULL;
@@ -1719,6 +1721,19 @@ void pblk_line_free(struct pblk *pblk, struct pblk_line *line)
     //pr_info("pblk gc: pblk_line_free line id = %d of dev_id %d\n", line->id, line->dev_id);
 }
 
+void pblk_line_group_put(struct kref *ref)
+{
+	struct pblk_md_line_group *group = container_of(ref, struct pblk_md_line_group, gc_ref);
+	
+	pr_info("pblk: %s\n",__func__);
+	pblk_print_group_info(group);
+
+	spin_lock(&group->lock);
+	group->group_state = PBLK_LINESTATE_FREE;
+	spin_unlock(&group->lock);
+	atomic_dec(&group->pblk->gc.read_inflight_gc);
+}
+
 static void __pblk_line_put(struct pblk *pblk, struct pblk_line *line)
 {
 	int dev_id = line->dev_id;
@@ -1726,7 +1741,8 @@ static void __pblk_line_put(struct pblk *pblk, struct pblk_line *line)
 	struct pblk_gc *gc = &pblk->gc;
 
 	spin_lock(&line->lock);
-	pr_info("pblk: %s: line %d of dev %d: vsc %d\n",
+	pr_info("------------------------------\n");
+	pr_info("pblk: %s: PUT line %d of dev %d: vsc %d\n",
 			__func__, line->id, line->dev_id, le32_to_cpu(*line->vsc));
 	WARN_ON(line->state != PBLK_LINESTATE_GC);
     if(line->state != PBLK_LINESTATE_GC) { //add by kan
@@ -1738,7 +1754,6 @@ static void __pblk_line_put(struct pblk *pblk, struct pblk_line *line)
 	spin_unlock(&line->lock);
 
 	atomic_dec(&gc->pipeline_gc);
-
 
 	spin_lock(&l_mg->free_lock);
 	list_add_tail(&line->list, &l_mg->free_list);
@@ -1763,6 +1778,8 @@ void pblk_line_put(struct kref *ref)
 {
 	struct pblk_line *line = container_of(ref, struct pblk_line, ref);
 	struct pblk *pblk = line->pblk;
+
+	kref_put(&line->group->gc_ref, pblk_line_group_put);
 
 	__pblk_line_put(pblk, line);
 }
@@ -1857,9 +1874,12 @@ void pblk_line_close(struct pblk *pblk, struct pblk_line *line)
 	spin_lock(&line->lock);
 	WARN_ON(line->state != PBLK_LINESTATE_OPEN);
 	line->state = PBLK_LINESTATE_CLOSED;
+	
+	atomic_inc(&line->group->nr_closed_line);
+	/*
 	move_list = pblk_line_gc_list(pblk, line);
-
 	list_add_tail(&line->list, move_list);
+	*/
 
 	kfree(line->map_bitmap);
 	line->map_bitmap = NULL;
@@ -1880,8 +1900,7 @@ void pblk_line_close(struct pblk *pblk, struct pblk_line *line)
 
 	spin_unlock(&line->lock);
 	spin_unlock(&l_mg->gc_lock);
-}
-
+} 
 void pblk_line_close_meta(struct pblk *pblk, struct pblk_line *line)
 {
 	int dev_id = line->dev_id;

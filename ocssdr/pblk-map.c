@@ -50,7 +50,9 @@ static void pblk_md_new_group(struct pblk *pblk)
 	spin_lock(&set->lock);
 	set->cur_group++;
 	group = &set->line_groups[set->cur_group];
+	group->pblk = pblk;
 	group->nr_unit = nr_unit;
+
 	ret = pblk_schedule_line_group(pblk, set->cur_group, set->rec_bitmap, dev_buf, nr_unit);
 	spin_unlock(&set->lock);
 	if (ret < 0) {
@@ -58,9 +60,16 @@ static void pblk_md_new_group(struct pblk *pblk)
 		for (i = 0; i < nr_unit; i++)
 			dev_buf[i] = i;
 	}
+
+	group->group_state = PBLK_LINESTATE_OPEN;
+	atomic_set(&group->nr_closed_line, 0);
+	kref_init(&group->gc_ref);
+	spin_lock_init(&group->lock);
+
 	for (i = 0; i < nr_unit; i++) {
 		dev_id = dev_buf[i];
 		line = pblk_line_get_data(pblk, dev_id);
+		line->group = group;
 		group->line_units[i].dev_id = dev_id;
 		group->line_units[i].line_id = line->id;
 	}
@@ -69,8 +78,7 @@ static void pblk_md_new_group(struct pblk *pblk)
 	for (i = 0; i < group->nr_unit; i++) {
 		dev_id = dev_buf[i];
 		line = pblk_line_get_data(pblk, dev_id);
-		pblk_line_setup_emeta_md(pblk, line);
-		pr_info("pblk: %s: new md line_group %d dev %d line %d seq_nr %d,%d\n",
+		pblk_line_setup_emeta_md(pblk, line); pr_info("pblk: %s: new md line_group %d dev %d line %d seq_nr %d,%d\n",
 				__func__, set->cur_group, dev_id, line->id, line->seq_nr, line->g_seq_nr);
 	}
 }

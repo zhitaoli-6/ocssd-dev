@@ -154,8 +154,15 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 		/* Configure next line for user data */
 		struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
 		set->cur_group = gid;
+
 		struct pblk_md_line_group *group = &set->line_groups[set->cur_group];
+		group->pblk = pblk;
 		group->nr_unit = pblk->stripe_size;
+		group->group_state = PBLK_LINESTATE_OPEN;
+		atomic_set(&group->nr_closed_line, 0);
+		kref_init(&group->gc_ref);
+		spin_lock_init(&group->lock);
+
 		// prepare line for each dev
 		for (dev_id = 0; dev_id < pblk->nr_dev; dev_id++) {
 			line = pblk_line_get_first_data(pblk, dev_id);
@@ -165,7 +172,7 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 			}
 		}
 
-		if (pblk_is_raid1or5(pblk)) {
+		if (!pblk_is_sd(pblk)) {
 			// choose first stripe: first nr_unit devs
 			ret = pblk_schedule_line_group(pblk, gid, set->rec_bitmap, dev_buf, group->nr_unit);
 			if (ret) {
@@ -175,6 +182,7 @@ static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
 			for (i = 0; i < group->nr_unit; i++) {
 				dev_id = dev_buf[i];
 				line = pblk_line_get_data(pblk, dev_id);
+				line->group = group;
 				group->line_units[i].dev_id = dev_id;
 				group->line_units[i].line_id = line->id;
 			}
@@ -877,6 +885,7 @@ static long pblk_setup_line_meta(struct pblk *pblk, struct pblk_line *line,
 	long nr_bad_chks, chk_in_line;
 
 	line->pblk = pblk;
+	line->group = NULL;
 	line->id = line_id;
 	line->dev_id = dev_id;
 	line->type = PBLK_LINETYPE_FREE;
@@ -886,11 +895,18 @@ static long pblk_setup_line_meta(struct pblk *pblk, struct pblk_line *line,
 	spin_lock_init(&line->lock);
 
 	// manually disable other lines
-	if (line_id <= 15 || line_id > 20) {
+	if (line_id <= 15) {
 		line->state = PBLK_LINESTATE_BAD;
 		list_add_tail(&line->list, &l_mg->bad_list);
 		return 0;
 	}
+#ifdef GC_ENABLE
+	if (line_id > 20) {
+		line->state = PBLK_LINESTATE_BAD;
+		list_add_tail(&line->list, &l_mg->bad_list);
+		return 0;
+	}
+#endif
 
 	if (geo->version == NVM_OCSSD_SPEC_12)
 		nr_bad_chks = pblk_setup_line_meta_12(pblk, line, chunk_meta);
@@ -1180,6 +1196,9 @@ static int pblk_lines_init(struct pblk *pblk)
 			min_dev_free_chks = dev_free_chks;
 	}
 
+	free_chks = total_free_chks;
+
+	/*
 	free_chks = 0;
 	switch (pblk->md_mode) {
 		case PBLK_RAID0:
@@ -1198,6 +1217,7 @@ static int pblk_lines_init(struct pblk *pblk)
 		pr_err("pblk: %s free_chks %ld\n", __func__, free_chks);
 		return 1;
 	}
+	*/
 
 	pblk_set_provision(pblk, free_chks);
 	pr_info("pblk: total nr_free_chks: %ld, real %ld\n", total_free_chks, free_chks);
@@ -1366,8 +1386,12 @@ static void pblk_exit(void *private)
 	pr_info("pblk: err_rec kthread exit...\n");
 	pblk_err_rec_exit(pblk);
 #endif
+
+#ifdef GC_ENABLE
 	pr_info("pblk: gc exit...\n");
 	pblk_gc_exit(pblk);
+#endif
+
 	pr_info("pblk: tear down...\n");
 	pblk_tear_down(pblk);
 
@@ -1431,7 +1455,7 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	pblk->devs = devs;
 	pblk->nr_dev = nr_dev;
 
-	pblk->md_mode = PBLK_SD;
+	pblk->md_mode = PBLK_RAID5;
 	pblk->on_resize = (flags & PBLK_TARGET_RESIZE) && !(flags & NVM_TARGET_FACTORY);
 	pr_info("pblk: %s: on_resize %d\n", __func__, pblk->on_resize);
 

@@ -149,6 +149,8 @@ static void pblk_gc_line_prepare_ws(struct work_struct *work)
 	int sec_left, nr_secs, bit;
 	int ret;
 
+	pr_info("pblk: %s line %d of dev %d\n", __func__, line->id, dev_id);
+
 	invalid_bitmap = kmalloc(lm->sec_bitmap_len, GFP_KERNEL);
 	if (!invalid_bitmap)
 		goto fail_free_ws;
@@ -250,7 +252,6 @@ out:
 	kfree(invalid_bitmap);
 
 	kref_put(&line->ref, pblk_line_put);
-	atomic_dec(&gc->read_inflight_gc);
 
 	return;
 
@@ -265,7 +266,6 @@ fail_free_ws:
 
 	pblk_put_line_back(pblk, line);
 	kref_put(&line->ref, pblk_line_put);
-	atomic_dec(&gc->read_inflight_gc);
 
 	pr_err("pblk: Failed to GC line %d\n", line->id);
 }
@@ -275,7 +275,8 @@ static int pblk_gc_line(struct pblk *pblk, struct pblk_line *line)
 	struct pblk_gc *gc = &pblk->gc;
 	struct pblk_line_ws *line_ws;
 
-	pr_debug("pblk: line '%d' being reclaimed for GC\n", line->id);
+	pr_info("pblk: %s: line %d of dev %d being reclaimed for GC\n",
+			__func__, line->id, line->dev_id);
 
 	line_ws = kmalloc(sizeof(struct pblk_line_ws), GFP_KERNEL);
 	if (!line_ws)
@@ -357,6 +358,51 @@ static struct pblk_line *pblk_gc_get_victim_line(struct pblk *pblk,
 	return victim;
 }
 
+static int pblk_get_group_vsc(struct pblk *pblk, struct pblk_md_line_group *group)
+{
+	struct pblk_line *line;
+	int dev_id, line_id;
+	int vsc = 0;
+	int i = 0;
+	for (i = 0; i < group->nr_unit; i++) {
+		dev_id = group->line_units[i].dev_id;
+		line_id = group->line_units[i].line_id;
+		line = &pblk->lines[dev_id][line_id];
+		vsc += le32_to_cpu(*line->vsc);
+	}
+	return vsc;
+}
+
+static struct pblk_md_line_group *pblk_gc_get_victim_group(struct pblk *pblk)
+{
+	struct pblk_md_line_group_set *set = &pblk->md_line_group_set;
+	struct pblk_md_line_group *group = NULL;
+	struct pblk_md_line_group *victim = NULL;
+	int victim_vsc = 0;
+	int vsc;
+	int state;
+	int i;
+
+	for (i = 0; i < set->cur_group; i++) {
+		group = &set->line_groups[i];
+		spin_lock(&group->lock);
+		state = group->group_state;
+		if (state == PBLK_LINESTATE_OPEN && atomic_read(&group->nr_closed_line) == group->nr_unit) {
+			group->group_state = PBLK_LINESTATE_CLOSED;
+			state = group->group_state;
+		}
+		spin_unlock(&group->lock);
+		if (state == PBLK_LINESTATE_CLOSED) {
+			vsc = pblk_get_group_vsc(pblk, group);
+			if (victim == NULL || vsc < victim_vsc){
+				victim = group;
+				victim_vsc = vsc;
+			}
+		}
+	}
+	return victim;
+}
+
 static bool pblk_gc_should_run(struct pblk_gc *gc, struct pblk_rl *rl)
 {
 	unsigned int nr_blocks_free, nr_blocks_need;
@@ -412,62 +458,61 @@ void pblk_gc_free_full_lines(struct pblk *pblk)
  */
 static void pblk_gc_run(struct pblk *pblk)
 {
-	// md-bugs
-	struct pblk_line_mgmt *l_mg = &pblk->l_mg[DEFAULT_DEV_ID];
 	struct pblk_gc *gc = &pblk->gc;
+	struct pblk_md_line_group *victim;
 	struct pblk_line *line;
-	struct list_head *group_list;
+	int line_id, dev_id, i;
 	bool run_gc;
-	int read_inflight_gc, gc_group = 0, prev_group = 0;
 
-	pblk_gc_free_full_lines(pblk);
-
+	//pblk_gc_free_full_lines(pblk);
 
 	run_gc = pblk_gc_should_run(&pblk->gc, &pblk->rl);
 	if (!run_gc || (atomic_read(&gc->read_inflight_gc) >= PBLK_GC_L_QD))
 		return;
-	pr_info("pblk gc: %s: gc main thread run\n", __func__);
+	pr_info("pblk GC: %s: gc main thread run\n", __func__);
 
-next_gc_group:
-	group_list = l_mg->gc_lists[gc_group++];
+	victim = pblk_gc_get_victim_group(pblk);
+	if (!victim) {
+		pr_info("pblk GC: %s: no victim group found\n", __func__);
+		return;
+	}
+	spin_lock(&victim->lock);
+	if (victim->group_state != PBLK_LINESTATE_CLOSED) {
+		spin_unlock(&victim->lock);
+		return;
+	}
+	victim->group_state = PBLK_LINESTATE_GC;
+	spin_unlock(&victim->lock);
 
-	do {
-		spin_lock(&l_mg->gc_lock);
-		if (list_empty(group_list)) {
-			spin_unlock(&l_mg->gc_lock);
-			break;
-		}
-
-		line = pblk_gc_get_victim_line(pblk, group_list);
+	pblk_print_group_info(victim);
+	
+	// last line is parity line, not necessary to write into buffer
+	for (i = 0; i < victim->nr_unit; i++) {
+		dev_id = victim->line_units[i].dev_id;
+		line_id = victim->line_units[i].line_id;
+		line = &pblk->lines[dev_id][line_id];
 
 		spin_lock(&line->lock);
 		WARN_ON(line->state != PBLK_LINESTATE_CLOSED);
 		line->state = PBLK_LINESTATE_GC;
 		spin_unlock(&line->lock);
+		// put parity line directly
+		if (i == victim->nr_unit - 1) {
+			atomic_inc(&gc->pipeline_gc);
+			kref_put(&line->ref, pblk_line_put);
+			break;
+		}
 
-		list_del(&line->list);
-		spin_unlock(&l_mg->gc_lock);
-
-		pr_info("pblk gc: %s: gc victim line %d of dev %d, vsc %d\n",
-				__func__, line->dev_id, line->id, le32_to_cpu(*line->vsc));
 		spin_lock(&gc->r_lock);
 		list_add_tail(&line->list, &gc->r_list);
 		spin_unlock(&gc->r_lock);
-
-		read_inflight_gc = atomic_inc_return(&gc->read_inflight_gc);
 		pblk_gc_reader_kick(gc);
 
-		prev_group = 1;
+		kref_get(&victim->gc_ref);
+	}
 
-		/* No need to queue up more GC lines than we can handle */
-		run_gc = pblk_gc_should_run(&pblk->gc, &pblk->rl);
-		if (!run_gc || read_inflight_gc >= PBLK_GC_L_QD)
-			break;
-	} while (1);
-
-	if (!prev_group && pblk->rl.rb_state > gc_group &&
-						gc_group < PBLK_GC_NR_LISTS)
-		goto next_gc_group;
+	kref_put(&victim->gc_ref, pblk_line_group_put);
+	atomic_inc(&gc->read_inflight_gc);
 }
 
 static void pblk_gc_timer(struct timer_list *t)
@@ -535,7 +580,6 @@ static void pblk_gc_start(struct pblk *pblk)
 {
 	pblk->gc.gc_active = 1;
 	pr_debug("pblk: gc start\n");
-	pr_err("pblk: gc start, bug(md-bugs) in gc left to be fixed!!!\n");
 }
 
 void pblk_gc_should_start(struct pblk *pblk)
@@ -597,6 +641,11 @@ int pblk_gc_init(struct pblk *pblk)
 {
 	struct pblk_gc *gc = &pblk->gc;
 	int ret;
+
+	if (!pblk_is_raid5(pblk)) {
+		pr_info("pblk: %s: only raid5 gc work now!\n", __func__);
+		return -1;
+	}
 
 	gc->gc_ts = kthread_create(pblk_gc_ts, pblk, "pblk-gc-ts");
 	if (IS_ERR(gc->gc_ts)) {

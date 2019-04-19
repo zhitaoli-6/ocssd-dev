@@ -57,7 +57,6 @@
 /* Static pool sizes */
 #define PBLK_GEN_WS_POOL_SIZE (2)
 
-#define PBLK_DEFAULT_OP (60)
 
 #define DEFAULT_DEV_ID (0)
 #define ERR_DEV_ID (0)
@@ -66,7 +65,14 @@
 #define ATOMIC_STRIPE
 
 //#define LINE_ERR_REC
-#define GC_ENABLE
+
+//#define GC_ENABLE
+
+#ifdef GC_ENABLE
+#define PBLK_DEFAULT_OP (60)
+#else
+#define PBLK_DEFAULT_OP (21)
+#endif
 
 #define BLK_DEV_SIZE (1ll*1024*1024)
 
@@ -546,6 +552,7 @@ struct pblk_smeta {
 
 struct pblk_line {
 	struct pblk *pblk;
+	struct pblk_md_line_group *group;
 	unsigned int id;		/* Line number corresponds to the
 					 * block line
 					 */
@@ -747,8 +754,16 @@ struct group_l2p_node {
 };
 
 struct pblk_md_line_group {
-	int nr_unit;
+	struct pblk *pblk;
+
 	struct pblk_md_line_unit line_units[NVM_MD_MAX_DEV_CNT];
+	int nr_unit;
+
+	int group_state;
+	atomic_t nr_closed_line;
+	struct kref gc_ref;
+
+	spinlock_t lock; // protect group_state;
 };
 
 struct pblk_md_line_group_set {
@@ -997,6 +1012,7 @@ int pblk_line_read_emeta(struct pblk *pblk, struct pblk_line *line,
 int pblk_blk_erase_async(struct pblk *pblk, struct ppa_addr erase_ppa, int dev_id);
 void pblk_line_put(struct kref *ref);
 void pblk_line_put_wq(struct kref *ref);
+void pblk_line_group_put(struct kref *ref);
 struct list_head *pblk_line_gc_list(struct pblk *pblk, struct pblk_line *line);
 u64 pblk_lookup_page(struct pblk *pblk, struct pblk_line *line);
 void pblk_dealloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs); u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs); u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
@@ -1074,7 +1090,7 @@ int pblk_recov_setup_rq(struct pblk *pblk, struct pblk_c_ctx *c_ctx,
  */
 #define PBLK_GC_MAX_READERS 8	/* Max number of outstanding GC reader jobs */
 #define PBLK_GC_RQ_QD 128	/* Queue depth for inflight GC requests */
-#define PBLK_GC_L_QD 4		/* Queue depth for inflight GC lines */
+#define PBLK_GC_L_QD 1		/* Queue depth for inflight GC lines */
 #define PBLK_GC_RSV_LINE 1	/* Reserved lines for GC */
 
 int pblk_gc_init(struct pblk *pblk);
@@ -1196,6 +1212,26 @@ static inline int pblk_schedule_line_group(struct pblk *pblk, int gid,
 	}
 	pr_info("----------------new md---------------\n");
 	return 0;
+}
+
+static void pblk_print_group_info(struct pblk_md_line_group *group)
+{
+	struct pblk *pblk = group->pblk;
+	struct pblk_line *line;
+	int dev_id, line_id;
+	int vsc = 0, line_vsc;
+	int i = 0;
+	pr_info("pblk: gc: group info\n");
+	for (i = 0; i < group->nr_unit; i++) {
+		dev_id = group->line_units[i].dev_id;
+		line_id = group->line_units[i].line_id;
+		line = &pblk->lines[dev_id][line_id];
+		line_vsc = le32_to_cpu(*line->vsc);
+		vsc += line_vsc;
+		pr_info("pblk: gc: group line %d of dev %d, vsc %d\n",
+				line_id, dev_id, line_vsc);
+	}
+	pr_info("pblk: gc: group info. total vsc %d\n", vsc);
 }
 
 static inline bool pblk_is_sd(struct pblk *pblk)
