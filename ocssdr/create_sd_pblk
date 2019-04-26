@@ -13,3 +13,9 @@ for id in `seq 1 4`
 do
 	nvme lnvm create -d ${id}n1 --lun-begin=0 --lun-end=31 -n pblk_sd$id -t pblk -f
 done
+
+
+#nvme lnvm create -d 1n1 --lun-begin=0 --lun-end=31 -n pblk_sd1 -t pblk -f
+#nvme lnvm create -d 2n1 --lun-begin=0 --lun-end=31 -n pblk_sd2 -t pblk -f
+#nvme lnvm create -d 3n1 --lun-begin=0 --lun-end=31 -n pblk_sd3 -t pblk -f
+#nvme lnvm create -d 5n1 --lun-begin=0 --lun-end=31 -n pblk_sd4 -t pblk -f

@@ -1,0 +1,3 @@
+set -x
+mkfs.ext4 /dev/md/raid
+mount /dev/md/raid /mnt/debug

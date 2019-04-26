@@ -1,0 +1,6 @@
+set -x
+./reload_pblk
+./create_sd_pblk
+./mdadm-create
+#mkfs.ext4 /dev/md/raid
+#mount /dev/md/raid /mnt/debug

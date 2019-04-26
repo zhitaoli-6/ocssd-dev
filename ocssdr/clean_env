@@ -1,0 +1,4 @@
+set -x
+umount /mnt/debug
+mdadm --stop /dev/md/raid
+./rm_sd_pblk
