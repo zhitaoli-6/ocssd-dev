@@ -1,5 +1,7 @@
 /*
- * Implementation of a reliability enforced Block Devices on top of Multiple Open-channel SSDs
+ * ocssdr.c:  customized stacked block device on top of multiple pblks.
+ * ocssdr only support  raid0 mode, which is just a toy.
+ * The proposed design and implementation is done by modification of pblk codes.
  */
 
 #include "ocssdr.h"

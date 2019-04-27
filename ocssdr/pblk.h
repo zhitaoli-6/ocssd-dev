@@ -74,14 +74,7 @@
 #define PBLK_DEFAULT_OP (21)
 #endif
 
-#define MD_MODE_SD
-
-#ifdef MD_MODE_SD
 #define BLK_DEV_SIZE (1ll*1024*1024)
-#else
-#define BLK_DEV_SIZE (1ll*1024*1024*4)
-#endif
-
 
 enum {
 	// NVM_TARGET_FACTORY = 1 << 0, in file "uapi/linux/lightnvm.h"

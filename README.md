@@ -6,13 +6,14 @@ Doing things with Open-Channel SSD. Please see [docs](docs/) in detail.
 
 ### Goals
 
-As a linux kernel module, this project provides RAID features on many Open-Channel SSDs. It combines RAID2.0 design with new storage deivce,  which has promising advantages compared to raid on conventional flash devices:
+As a linux kernel module, this project provides RAID features on many Open-Channel SSDs. By codesiggn upper layer storage system with underlying Open-Channel SSDs, the proposed Log-ROC is written inlog structured way, which can eliminate the cost of parities. 
 
-1. fast recovery from device failures
-2. low-cost to resize 
-3. low amplification compared to software raid on pblk
-4. global wear-levelling
-5. low variation of IO latency
+Compared to software raid5 on pblk, Log-ROC has following contributions:
+1. higher performance and longer lifespan of SSDs, because parities update need zero read and minimum write. RAID5 on pblk will need 2X read and 2X write in random write workload.
+2. flexible data placement, which allows:
+	- fast recovery from device failures
+	- low-cost to resize 
+	- global wear-levelling
 
 ### Design
 
@@ -21,19 +22,15 @@ There are three available methods which can provide a block device survice with 
 2. customized raid-like on pblk
 3. **enhance pblk with multiple devices support**
 
-This work focuses on the third one.
+This work focuses the third one.
 
 
 ### Done
 
 1. SD/RAID0/RAID1/RAID5 normal path
-2. Recover from poweroff: all modes
-3. Read error handling: raid1/raid5
-4. Resize: raid5(only support raid5 now)
+2. Recover from poweroff: SD/RAID5
+3. Read error handling: RAID1/RAID5
+4. Resize: RAID5
+5. GC: SD/RAID5
 
 ### TODO
-
-* Recovery from device failures: lines or the whole device
-* resize of raid0/raid1
-
-* Perf compared to software raid on multiple pblks

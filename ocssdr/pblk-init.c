@@ -771,7 +771,11 @@ static void pblk_set_provision(struct pblk *pblk, long nr_free_blks)
 	blk_meta = DIV_ROUND_UP(sec_meta, geo->clba);
 
 	//pblk->capacity = (provisioned - blk_meta) * geo->clba;
-	pblk->capacity = BLK_DEV_SIZE;
+	if (pblk_is_sd(pblk)) {
+		pblk->capacity = BLK_DEV_SIZE;
+	} else {
+		pblk->capacity = 4*BLK_DEV_SIZE;
+	}
 
 	atomic_set(&pblk->rl.free_blocks, nr_free_blks);
 	atomic_set(&pblk->rl.free_user_blocks, nr_free_blks);
@@ -1455,7 +1459,7 @@ static void *pblk_init(struct nvm_tgt_dev **devs, int nr_dev, struct gendisk *td
 	pblk->devs = devs;
 	pblk->nr_dev = nr_dev;
 
-	pblk->md_mode = PBLK_SD;
+	pblk->md_mode = PBLK_RAID5;
 	pblk->on_resize = (flags & PBLK_TARGET_RESIZE) && !(flags & NVM_TARGET_FACTORY);
 	pr_info("pblk: %s: on_resize %d\n", __func__, pblk->on_resize);
 
