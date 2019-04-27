@@ -74,6 +74,8 @@
 #define PBLK_DEFAULT_OP (21)
 #endif
 
+//#define DISABLE_FLUSH
+
 #define BLK_DEV_SIZE (1ll*1024*1024)
 
 enum {
