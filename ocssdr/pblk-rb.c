@@ -437,6 +437,7 @@ static int pblk_rb_may_write_flush(struct pblk_rb *rb, unsigned int nr_entries,
 	mem = (*pos + nr_entries) & (rb->nr_entries - 1);
 	*io_ret = NVM_IO_DONE;
 
+#ifndef DISABLE_FLUSH
 	if (bio->bi_opf & REQ_PREFLUSH) {
 		struct pblk *pblk = container_of(rb, struct pblk, rwb);
 
@@ -444,6 +445,7 @@ static int pblk_rb_may_write_flush(struct pblk_rb *rb, unsigned int nr_entries,
 		if (pblk_rb_flush_point_set(&pblk->rwb, bio, mem))
 			*io_ret = NVM_IO_OK;
 	}
+#endif
 
 	/* Protect from read count */
 	smp_store_release(&rb->mem, mem);
