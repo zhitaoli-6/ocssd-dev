@@ -386,8 +386,9 @@ void pblk_write_timer_fn(struct timer_list *t)
 void pblk_write_should_kick(struct pblk *pblk)
 {
 	unsigned int secs_avail = pblk_rb_read_count(&pblk->rwb);
+	unsigned int secs_to_flush = pblk_rb_flush_point_count(&pblk->rwb);
 
-	if (secs_avail >= pblk->min_write_pgs)
+	if (secs_avail >= pblk->min_write_pgs || secs_to_flush)
 		pblk_write_kick(pblk);
 }
 
