@@ -64,7 +64,7 @@ plt.ylim(0, 2000)
 xx = np.array([1,3,5,7,9,11])
 plt.xticks(xx,['4', '16', '64', '256', '1024','4096'])
 plt.xlabel('Block Size(KB)', fontproperties=font, verticalalignment='center')
-plt.ylabel('Bindwidth(MB/s)', fontproperties=font, verticalalignment='center')
+plt.ylabel('Throughput(MB/s)', fontproperties=font, verticalalignment='center')
 
 #ax = plt.gca()
 #ax.spines['top'].set_visible(False)

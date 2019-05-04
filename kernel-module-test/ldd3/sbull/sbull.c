@@ -30,7 +30,7 @@ static int hardsect_size = 512;
 module_param(hardsect_size, int, 0);
 static int nsectors = 1024*1024*8;	/* How big the drive is */
 module_param(nsectors, int, 0);
-static int ndevices = 4;
+static int ndevices = 1;
 module_param(ndevices, int, 0);
 
 static int RAID0 = 0;
