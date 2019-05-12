@@ -60,7 +60,7 @@ for label in (ax.get_xticklabels() + ax.get_yticklabels()):
     label.set_fontproperties(font)
     label.set_fontsize(10)
 plt.grid(linestyle='--', linewidth=0.5, zorder=1)
-plt.ylim(0, 1)
+plt.ylim(-0.03, 1)
 xx = np.array([1,3,5,7,9,11])
 plt.xticks(xx,['4', '16', '64', '256', '1024','4096'])
 plt.xlabel('Block Size(KB)', fontproperties=font, verticalalignment='center')
