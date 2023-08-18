@@ -1,6 +1,6 @@
 # Log-ROC: Log Structured RAID on Open-Channel SSDs
 
-Short paper accepted on [ICPP2022](http://www.iccd-conf.com/Program_2022.html)
+Short paper accepted on [ICCD2022](http://www.iccd-conf.com/Program_2022.html)
 
 ### Introduction
 
