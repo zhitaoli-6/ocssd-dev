@@ -1,12 +1,10 @@
-# ocssd-dev
+# Log-ROC: Log Structured RAID on Open-Channel SSDs
 
-Doing things with Open-Channel SSD. Please see [docs](docs/) in detail.
+Short paper accepted on [ICPP2022](http://www.iccd-conf.com/Program_2022.html)
 
-## OCSSDR
+### Introduction
 
-### Goals
-
-As a linux kernel module, this project provides RAID features on many Open-Channel SSDs. By codesiggn upper layer storage system with underlying Open-Channel SSDs, the proposed Log-ROC is written inlog structured way, which can eliminate the cost of parities. 
+As a linux kernel module, this project provides RAID features on many Open-Channel SSDs. By codesign upper-layer storage system with underlying Open-Channel SSDs, the proposed Log-ROC is written inlog structured way, which can eliminate the cost of parities. 
 
 Compared to software raid5 on pblk, Log-ROC has following contributions:
 1. higher performance and longer lifespan of SSDs, because parities update need zero read and minimum write. RAID5 on pblk will need 2X read and 2X write in random write workload.
